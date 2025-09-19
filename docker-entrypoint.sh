@@ -44,7 +44,7 @@ for settings_path in CONFIG_PATHS:
 PY
 
 if [ $# -eq 0 ]; then
-    set -- bash
+    set -- /bin/bash -l
 fi
 
-exec /bin/bash -lc "$*"
+exec "$@"
