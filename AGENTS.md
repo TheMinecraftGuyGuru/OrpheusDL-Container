@@ -1,24 +1,28 @@
 # Repository Guide for Agents
 
 ## Maintenance Expectations
-- Update this document whenever you learn new information about the repository structure, workflows, or conventions so future tasks start with an up-to-date brief.
-- Keep the information concise but sufficiently detailed to orient new contributors quickly.
+- Update this document whenever you learn new information about the repository structure, workflows, conventions, or tooling so future tasks start with an up-to-date brief.
+- Expand the sections below as the codebase grows (e.g., when tests, scripts, or additional services are introduced).
 
-## High-Level Overview
-- This repository packages the [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) music downloader and its Qobuz module into a container-friendly layout.
-- The root project primarily contains infrastructure files (Docker configuration, default settings, and submodule metadata). All OrpheusDL application code lives inside Git submodules under `external/`.
+## Current Repository Snapshot
 
-## Key Files and Directories
-- `Dockerfile`: Builds an Alpine-based image, installs Python dependencies, pulls Git submodules, and stages OrpheusDL plus the Qobuz module under `/orpheusdl`. The container entrypoint drops you into Bash inside that directory so the bundled modules are auto-discovered.
-- `settings.json`: Default OrpheusDL configuration used inside the container. Adjust this to set download paths, quality targets, metadata formatting, and Qobuz credentials.
-- `.gitmodules`: Declares submodules for the upstream OrpheusDL core (`external/orpheusdl`) and the Qobuz provider module (`external/orpheusdl-qobuz`). Run `git submodule update --init --recursive` after cloning to populate them.
-- `external/`: Holds the OrpheusDL and Qobuz module submodules once initialised. They are empty until the submodule command above is executed.
+### Purpose
+- This repository packages the [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) music downloader and its Qobuz provider module into a container-friendly layout so the tool can be built and run in a consistent environment.
 
-## Typical Workflow Notes
-- After cloning, initialise submodules before building the Docker image; the Dockerfile expects populated code when it copies `/app/external/...` into the runtime image.
-- Build the container with `docker build -t orpheusdl .` (or similar) and run it with your desired command, inheriting the default entrypoint (`/bin/bash -lc`). You can override CMD to run `python3 app.py ...` inside `/orpheusdl` if needed.
-- Customise `settings.json` before baking the image or mount an override at runtime to avoid embedding credentials in the image.
+### Layout Highlights
+- Root directory contains infrastructure assets only:
+  - `Dockerfile`: Alpine-based build that installs system packages, fetches Git submodules, installs Python dependencies from `external/orpheusdl/requirements.txt`, copies the OrpheusDL core and Qobuz module into `/orpheusdl`, and sets a Bash entrypoint with `/orpheusdl` as the working directory.
+  - `settings.json`: Default OrpheusDL configuration bundled into the image. It defines download paths/quality, formatting rules, lyrics & cover behaviour, playlist preferences, codec conversion options, and placeholder Qobuz credentials (empty strings by default).
+  - `README.md`: Currently only contains the project title—add setup or usage instructions here if you gather them.
+  - `.gitmodules`: Declares the `external/orpheusdl` and `external/orpheusdl-qobuz` submodules; the directories exist but are empty unless initialised.
+- `external/`: Hosts the OrpheusDL core and Qobuz provider submodules. Run `git submodule update --init --recursive` after cloning or before building the Docker image so their contents are available.
 
-## To Do / Knowledge Gaps
-- Document any additional modules, scripts, or helper tooling if they are added later.
-- Capture testing or validation steps (e.g., linting, unit tests, smoke tests) once the repository contains automation beyond container builds.
+### Build & Runtime Flow
+- Building: `docker build -t orpheusdl .` (ensure submodules are populated first or the copy steps in the Dockerfile will fail).
+- Runtime defaults: Container starts in `/orpheusdl` under Bash. Override `CMD` with e.g. `python3 app.py` to launch OrpheusDL directly.
+- Configuration: Modify `settings.json` before building or mount an override at runtime to avoid baking credentials into the image.
+
+## Known Gaps / Follow-Ups
+- Document any CI, linting, or smoke-test commands once they exist (currently none are defined in the repo).
+- Populate README with usage instructions, volume mounting guidance, and example commands when that knowledge becomes available.
+- Note additional modules, scripts, or configuration files here as they are introduced
