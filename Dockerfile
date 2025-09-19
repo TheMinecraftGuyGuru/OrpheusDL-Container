@@ -10,5 +10,10 @@ WORKDIR /app
 # Copy source files (adjust as needed)
 COPY . /app
 
+# Copy OrpheusDL core and modules into expected container locations
+COPY external/orpheusdl /orpheusdl
+RUN mkdir -p /orpheusdl/modules
+COPY external/orpheusdl-qobuz /orpheusdl/modules/qobuz
+
 # Default command
 CMD ["sh"]
