@@ -1,0 +1,6 @@
+[submodule "external/orpheusdl-qobuz"]
+	path = external/orpheusdl-qobuz
+	url = https://github.com/KyokoMiki/orpheusdl-qobuz.git
+[submodule "external/orpheusdl"]
+	path = external/orpheusdl
+	url = https://github.com/OrfiTeam/OrpheusDL
