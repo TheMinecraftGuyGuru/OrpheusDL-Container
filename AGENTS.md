@@ -20,9 +20,9 @@
 ### Build & Runtime Flow
 - Building: `docker build -t orpheusdl .` (ensure submodules are populated first or the copy steps in the Dockerfile will fail).
 - Runtime defaults: Container starts in `/orpheusdl` under Bash. Override `CMD` with e.g. `python3 app.py` to launch OrpheusDL directly.
-- Configuration: Modify `settings.json` before building or mount an override at runtime to avoid baking credentials into the image. The default download path points to `/mnt/kaina-family/media/music`; adjust to match your environment.
+- Configuration: Modify `settings.json` before building or mount an override at runtime to avoid baking credentials into the image.
 
 ## Known Gaps / Follow-Ups
 - Document any CI, linting, or smoke-test commands once they exist (currently none are defined in the repo).
 - Populate README with usage instructions, volume mounting guidance, and example commands when that knowledge becomes available.
-- Note additional modules, scripts, or configuration files here as they are introduced.
+- Note additional modules, scripts, or configuration files here as they are introduced
