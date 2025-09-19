@@ -1,7 +1,7 @@
 {
     "global": {
         "general": {
-            "download_path": "/mnt/kaina-family/media/music",
+            "download_path": "/music",
             "download_quality": "hifi",
             "search_limit": 10
         },
