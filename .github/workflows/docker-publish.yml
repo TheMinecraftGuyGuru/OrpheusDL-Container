@@ -11,8 +11,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    env:
-      IMAGE: ${{ lower(github.repository) }}
 
     steps:
       - name: Checkout repo
@@ -31,5 +29,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ env.IMAGE }}:latest
-            ghcr.io/${{ env.IMAGE }}:${{ github.sha }}
+            ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+            ghcr.io/theminecraftguyguru/orpheusdl-container:${{ github.sha }}
