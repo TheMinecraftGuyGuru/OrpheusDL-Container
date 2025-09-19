@@ -21,6 +21,10 @@ WORKDIR /app
 # Copy source files (adjust as needed)
 COPY . /app
 
+# Provide an entrypoint that injects runtime credentials into the settings file
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Fetch git submodules so their contents are available during the build
 RUN git config --global --add safe.directory /app \
     && git -C /app submodule update --init --recursive
@@ -37,6 +41,5 @@ RUN mkdir -p /orpheusdl/modules/qobuz \
 # Change to the OrpheusDL directory at runtime so bundled modules are detected
 WORKDIR /orpheusdl
 
-# Run commands through bash so built-ins like `cd` are available when overriding CMD
-ENTRYPOINT ["/bin/bash", "-lc"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bash"]
