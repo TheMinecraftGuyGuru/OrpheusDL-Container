@@ -34,5 +34,9 @@ RUN mkdir -p /orpheusdl/modules/qobuz \
     && cp -a /app/external/orpheusdl/. /orpheusdl/ \
     && cp -a /app/external/orpheusdl-qobuz/. /orpheusdl/modules/qobuz/
 
-# Default command
-CMD ["sh"]
+# Change to the OrpheusDL directory at runtime so bundled modules are detected
+WORKDIR /orpheusdl
+
+# Run commands through bash so built-ins like `cd` are available when overriding CMD
+ENTRYPOINT ["/bin/bash", "-lc"]
+CMD ["bash"]
