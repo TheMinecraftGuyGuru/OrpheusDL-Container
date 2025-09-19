@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      IMAGE: ${{ toLower(github.repository) }}
 
     steps:
       - name: Checkout repo
@@ -29,6 +31,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner,, }}/my-alpine-app:latest
-            ghcr.io/${{ github.repository_owner,, }}/my-alpine-app:${{ github.sha }}
-
+            ghcr.io/${{ env.IMAGE }}:latest
+            ghcr.io/${{ env.IMAGE }}:${{ github.sha }}
