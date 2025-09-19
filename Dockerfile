@@ -1,8 +1,19 @@
 # syntax=docker/dockerfile:1
 FROM alpine:3.20
 
-# Install dependencies (example: curl + bash)
-RUN apk add --no-cache curl bash git
+# Install system dependencies
+RUN apk add --no-cache \
+        bash \
+        curl \
+        ffmpeg \
+        gcc \
+        git \
+        libffi-dev \
+        musl-dev \
+        openssl-dev \
+        python3 \
+        python3-dev \
+        py3-pip
 
 # Set working dir
 WORKDIR /app
@@ -13,6 +24,10 @@ COPY . /app
 # Fetch git submodules so their contents are available during the build
 RUN git config --global --add safe.directory /app \
     && git -C /app submodule update --init --recursive
+
+# Install OrpheusDL Python dependencies inside the image
+RUN pip3 install --no-cache-dir --upgrade pip \
+    && pip3 install --no-cache-dir -r /app/external/orpheusdl/requirements.txt
 
 # Copy OrpheusDL core and modules into expected container locations
 RUN mkdir -p /orpheusdl/modules/qobuz \
