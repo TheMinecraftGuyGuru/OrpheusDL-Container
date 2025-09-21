@@ -29,9 +29,10 @@ settings:
 
 - `QOBUZ_APP_ID` or `APP_ID`
 - `QOBUZ_APP_SECRET` or `APP_SECRET`
-- `QOBUZ_USERNAME`
-- `QOBUZ_PASSWORD`
+- `QOBUZ_USER_ID` or `USER_ID`
+- `QOBUZ_TOKEN`, `QOBUZ_USER_AUTH_TOKEN`, `QOBUZ_AUTH_TOKEN`, `TOKEN`, or `USER_AUTH_TOKEN`
 
-Lowercase variants of these names are also respected. Values are only written when the
-corresponding variable is provided, so existing settings remain unchanged unless explicitly
-overridden at runtime.
+Lowercase variants of these names are also respected. The entrypoint mirrors the user ID
+and token values into the legacy username/password fields for compatibility. Values are
+only written when the corresponding variable is provided, so existing settings remain
+unchanged unless explicitly overridden at runtime.

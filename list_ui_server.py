@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import html
+import importlib.util
 import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List, Tuple
-from urllib.error import HTTPError, URLError
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
-from urllib.request import Request, urlopen
 
 LIST_LABELS: Dict[str, str] = {
     "artist": "Artists",
@@ -171,6 +171,33 @@ LISTS_DIR = Path(os.environ.get("LISTS_DIR", "/data/lists"))
 WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("LISTS_WEB_PORT", "8080"))
 
+BASE_DIR = Path(__file__).resolve().parent
+_ORPHEUSDL_PATH = BASE_DIR / "external" / "orpheusdl"
+if _ORPHEUSDL_PATH.exists():
+    path_str = str(_ORPHEUSDL_PATH)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+
+_QOBUZ_MODULE_LOCK = threading.Lock()
+_QOBUZ_API_MODULE = None
+_QOBUZ_CLIENT = None
+_QOBUZ_CLIENT_CREDS: Optional[Dict[str, str]] = None
+
+_QOBUZ_ENV_MAPPING: Dict[str, Tuple[str, ...]] = {
+    "app_id": ("QOBUZ_APP_ID", "APP_ID", "app_id"),
+    "app_secret": ("QOBUZ_APP_SECRET", "APP_SECRET", "app_secret"),
+    "user_id": ("QOBUZ_USER_ID", "USER_ID", "user_id"),
+    "token": (
+        "QOBUZ_TOKEN",
+        "QOBUZ_USER_AUTH_TOKEN",
+        "QOBUZ_AUTH_TOKEN",
+        "TOKEN",
+        "USER_AUTH_TOKEN",
+        "user_auth_token",
+        "token",
+    ),
+}
+
 _lock = threading.RLock()
 _async_lock = threading.Lock()
 _async_messages: List[Tuple[str, bool]] = []
@@ -180,42 +207,93 @@ def _list_path(kind: str) -> Path:
     return LISTS_DIR / f"{kind}s.txt"
 
 
-def _get_qobuz_app_id() -> str | None:
-    for key in ("QOBUZ_APP_ID", "APP_ID", "app_id"):
-        value = os.environ.get(key)
+def _load_qobuz_api_module():
+    global _QOBUZ_API_MODULE
+    with _QOBUZ_MODULE_LOCK:
+        if _QOBUZ_API_MODULE is not None:
+            return _QOBUZ_API_MODULE
+
+        module_path = BASE_DIR / "external" / "orpheusdl-qobuz" / "qobuz_api.py"
+        if not module_path.exists():
+            raise RuntimeError("Qobuz integration is unavailable.")
+
+        spec = importlib.util.spec_from_file_location(
+            "orpheusdl_qobuz_api", module_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to load Qobuz integration module.")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _QOBUZ_API_MODULE = module
+        return module
+
+
+def _get_env_value(names: Tuple[str, ...]) -> str:
+    for name in names:
+        value = os.environ.get(name)
         if value:
             return value
-    return None
+    return ""
+
+
+def _collect_qobuz_credentials() -> Dict[str, str]:
+    creds = {
+        key: _get_env_value(names) for key, names in _QOBUZ_ENV_MAPPING.items()
+    }
+    if not creds.get("app_id"):
+        raise RuntimeError("Qobuz app_id is not configured.")
+    return creds
+
+
+def _get_qobuz_client():
+    global _QOBUZ_CLIENT, _QOBUZ_CLIENT_CREDS
+    creds = _collect_qobuz_credentials()
+
+    with _QOBUZ_MODULE_LOCK:
+        if _QOBUZ_CLIENT is not None and _QOBUZ_CLIENT_CREDS == creds:
+            return _QOBUZ_CLIENT
+
+        module = _load_qobuz_api_module()
+        session = module.Qobuz(
+            creds["app_id"],
+            creds.get("app_secret", ""),
+            RuntimeError,
+        )
+        token = creds.get("token")
+        if token:
+            session.auth_token = token
+        user_id = creds.get("user_id")
+        if user_id:
+            setattr(session, "user_id", user_id)
+
+        _QOBUZ_CLIENT = session
+        _QOBUZ_CLIENT_CREDS = creds
+        return session
 
 
 def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
-    app_id = _get_qobuz_app_id()
-    if not app_id:
-        raise RuntimeError("Qobuz app_id is not configured.")
-
     if limit <= 0:
         limit = 10
 
-    params = {
-        "app_id": app_id,
-        "type": "artists",
-        "query": query,
-        "limit": str(limit),
-    }
-    url = "https://www.qobuz.com/api.json/0.2/search/get?" + urlencode(params)
-    request = Request(url, headers={"User-Agent": "OrpheusDL-ListUI/1.0"})
-    try:
-        with urlopen(request, timeout=10) as response:
-            payload = response.read()
-    except HTTPError as exc:
-        raise RuntimeError(f"Qobuz search returned HTTP {exc.code}.") from exc
-    except URLError as exc:  # pragma: no cover - network failure
-        raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
+    session = _get_qobuz_client()
 
     try:
-        data = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError as exc:  # pragma: no cover - unexpected payload
-        raise RuntimeError("Unexpected response from Qobuz search.") from exc
+        data = session.search("artist", query, limit=limit)
+    except RuntimeError as exc:
+        message = str(exc)
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError:
+            raise RuntimeError(message) from exc
+        else:
+            if isinstance(payload, dict):
+                detail = payload.get("message") or payload.get("error") or payload.get("code")
+                if detail:
+                    raise RuntimeError(str(detail)) from exc
+            raise RuntimeError(message) from exc
+    except Exception as exc:  # pragma: no cover - network failure
+        raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
 
     artists = data.get("artists", {}) or {}
     items = artists.get("items") or []

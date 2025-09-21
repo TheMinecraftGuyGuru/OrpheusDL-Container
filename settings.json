@@ -73,7 +73,9 @@
             "app_secret": "",
             "quality_format": "{sample_rate}kHz {bit_depth}bit",
             "username": "",
-            "password": ""
+            "password": "",
+            "user_id": "",
+            "token": ""
         }
     }
 }
