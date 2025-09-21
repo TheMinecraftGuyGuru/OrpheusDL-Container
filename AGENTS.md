@@ -72,3 +72,4 @@ paths are relative to the repo root unless stated otherwise.
 - `external/orpheusdl-qobuz`: Git submodule for the Qobuz provider. Copied into
   `/orpheusdl/modules/qobuz/` during the image build.
 
+EOF
