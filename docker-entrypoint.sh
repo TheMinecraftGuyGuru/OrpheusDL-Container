@@ -68,8 +68,16 @@ target_path = Path('/orpheusdl/config/settings.json')
 ENV_MAPPING = {
     'app_id': ('QOBUZ_APP_ID', 'APP_ID', 'app_id'),
     'app_secret': ('QOBUZ_APP_SECRET', 'APP_SECRET', 'app_secret'),
-    'username': ('QOBUZ_USERNAME', 'USERNAME', 'username'),
-    'password': ('QOBUZ_PASSWORD', 'PASSWORD', 'password'),
+    'user_id': ('QOBUZ_USER_ID', 'USER_ID', 'user_id'),
+    'token': (
+        'QOBUZ_TOKEN',
+        'QOBUZ_USER_AUTH_TOKEN',
+        'QOBUZ_AUTH_TOKEN',
+        'TOKEN',
+        'USER_AUTH_TOKEN',
+        'user_auth_token',
+        'token',
+    ),
 }
 
 if settings_path.exists():
@@ -89,6 +97,14 @@ if settings_path.exists():
                     if qobuz.get(key) != value:
                         qobuz[key] = value
                     break
+
+        user_id = qobuz.get('user_id')
+        if user_id is not None and qobuz.get('username') != user_id:
+            qobuz['username'] = user_id
+
+        token = qobuz.get('token')
+        if token is not None and qobuz.get('password') != token:
+            qobuz['password'] = token
 
         target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
