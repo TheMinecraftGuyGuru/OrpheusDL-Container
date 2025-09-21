@@ -45,11 +45,14 @@ ARTIST_SEARCH_SCRIPT = """
   const button = document.getElementById('artist-search-button');
   const results = document.getElementById('artist-search-results');
   if (!input || !results) {
+    console.warn('[ArtistSearch] Search controls not found in the document.');
     return;
   }
 
   let activeController = null;
   const escapeMap = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': '&quot;', "'": "&#39;"};
+
+  console.log('[ArtistSearch] Initialised search UI elements.');
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, (char) => escapeMap[char] || char);
@@ -86,20 +89,24 @@ ARTIST_SEARCH_SCRIPT = """
   async function runSearch() {
     const query = input.value.trim();
     if (!query) {
+      console.warn('[ArtistSearch] Search attempted without a query.');
       showStatus('Enter a search term.');
       return;
     }
 
     if (activeController) {
+      console.log('[ArtistSearch] Aborting previous search request.');
       activeController.abort();
     }
 
     const controller = new AbortController();
     activeController = controller;
+    console.log('[ArtistSearch] Dispatching search request.', {query, limit: 10});
     showStatus('Searching…');
 
     try {
       const response = await fetch('/api/artist-search?q=' + encodeURIComponent(query), {signal: controller.signal});
+      console.log('[ArtistSearch] Received response from server.', {status: response.status});
       if (!response.ok) {
         let detail = 'HTTP ' + response.status;
         try {
@@ -117,11 +124,14 @@ ARTIST_SEARCH_SCRIPT = """
       }
 
       const data = await response.json();
+      console.log('[ArtistSearch] Server returned results.', {count: Array.isArray(data.results) ? data.results.length : null});
       render(data.results || []);
     } catch (error) {
       if (error.name === 'AbortError') {
+        console.log('[ArtistSearch] Search request aborted.');
         return;
       }
+      console.error('[ArtistSearch] Search failed.', error);
       showStatus('Search failed: ' + error.message);
     } finally {
       if (activeController === controller) {
@@ -131,6 +141,7 @@ ARTIST_SEARCH_SCRIPT = """
   }
 
   function submitArtist(id, name) {
+    console.log('[ArtistSearch] Submitting artist to add form.', {id, name});
     const form = document.createElement('form');
     form.method = 'post';
     form.action = '/add';
@@ -155,6 +166,7 @@ ARTIST_SEARCH_SCRIPT = """
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
+      console.log('[ArtistSearch] Enter key pressed, triggering search.');
       runSearch();
     }
   });
@@ -164,6 +176,10 @@ ARTIST_SEARCH_SCRIPT = """
     if (!buttonEl) {
       return;
     }
+    console.log('[ArtistSearch] Add button clicked from results.', {
+      id: buttonEl.getAttribute('data-artist-id'),
+      name: buttonEl.getAttribute('data-artist-name') || ''
+    });
     submitArtist(buttonEl.getAttribute('data-artist-id'), buttonEl.getAttribute('data-artist-name') || '');
   });
 })();
@@ -220,6 +236,7 @@ def _load_qobuz_api_module():
         if not module_path.exists():
             raise RuntimeError("Qobuz integration is unavailable.")
 
+        logging.debug("Loading Qobuz API module from %s", module_path)
         spec = importlib.util.spec_from_file_location(
             "orpheusdl_qobuz_api", module_path
         )
@@ -229,6 +246,7 @@ def _load_qobuz_api_module():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         _QOBUZ_API_MODULE = module
+        logging.info("Qobuz API module loaded successfully.")
         return module
 
 
@@ -244,6 +262,13 @@ def _collect_qobuz_credentials() -> Dict[str, str]:
     creds = {
         key: _get_env_value(names) for key, names in _QOBUZ_ENV_MAPPING.items()
     }
+    logging.info(
+        "Collected Qobuz credential hints: app_id=%s app_secret=%s user_id=%s token=%s",
+        "set" if creds.get("app_id") else "missing",
+        "set" if creds.get("app_secret") else "missing",
+        "set" if creds.get("user_id") else "missing",
+        "set" if creds.get("token") else "missing",
+    )
     if not creds.get("app_id"):
         raise RuntimeError("Qobuz app_id is not configured.")
     return creds
@@ -255,6 +280,7 @@ def _get_qobuz_client():
 
     with _QOBUZ_MODULE_LOCK:
         if _QOBUZ_CLIENT is not None and _QOBUZ_CLIENT_CREDS == creds:
+            logging.debug("Reusing cached Qobuz client instance.")
             return _QOBUZ_CLIENT
 
         module = _load_qobuz_api_module()
@@ -283,6 +309,7 @@ def _get_qobuz_client():
 
         _QOBUZ_CLIENT = session
         _QOBUZ_CLIENT_CREDS = creds
+        logging.info("Created new Qobuz client session with provided credentials.")
         return session
 
 
@@ -290,6 +317,7 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
     if limit <= 0:
         limit = 10
 
+    logging.info("Starting Qobuz artist search for query %r with limit %s.", query, limit)
     session = _get_qobuz_client()
 
     try:
@@ -307,8 +335,10 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                     raise RuntimeError(str(detail)) from exc
             raise RuntimeError(message) from exc
     except requests.exceptions.Timeout as exc:
+        logging.warning("Qobuz artist search timed out for query %r.", query)
         raise RuntimeError("Qobuz search timed out.") from exc
     except Exception as exc:  # pragma: no cover - network failure
+        logging.exception("Unexpected error during Qobuz artist search for query %r.", query)
         raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
 
     artists = data.get("artists", {}) or {}
@@ -337,6 +367,7 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             }
         )
 
+    logging.info("Qobuz artist search for query %r returned %s result(s).", query, len(results))
     return results
 
 
@@ -539,6 +570,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 10
 
+        logging.info(
+            "Received artist search request from %s with query=%r limit=%s.",
+            self.address_string(),
+            query,
+            limit,
+        )
         if not query:
             self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -548,10 +585,20 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             message = str(exc)
             status = HTTPStatus.SERVICE_UNAVAILABLE if "app_id" in message else HTTPStatus.BAD_GATEWAY
-            logging.warning("Artist search failed: %s", message)
+            logging.warning(
+                "Artist search request for query %r failed with status %s: %s",
+                query,
+                status,
+                message,
+            )
             self.send_json({"error": message}, status=status)
             return
 
+        logging.info(
+            "Artist search request for query %r returning %s result(s) to client.",
+            query,
+            len(results),
+        )
         self.send_json({"results": results})
 
     def handle_add(self, data: Dict[str, str]) -> None:
