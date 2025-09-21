@@ -182,7 +182,7 @@ if _ORPHEUSDL_PATH.exists():
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-_QOBUZ_MODULE_LOCK = threading.Lock()
+_QOBUZ_MODULE_LOCK = threading.RLock()
 _QOBUZ_API_MODULE = None
 _QOBUZ_CLIENT = None
 _QOBUZ_CLIENT_CREDS: Optional[Dict[str, str]] = None
