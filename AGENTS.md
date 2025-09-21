@@ -29,3 +29,46 @@
 - Populate README with usage instructions, volume mounting guidance, and example commands when that knowledge becomes available.
 - Note additional modules, scripts, or configuration files here as they are introduced
 
+## File Catalog
+Use this section to quickly identify where a particular concern lives within the repository. All
+paths are relative to the repo root unless stated otherwise.
+
+### Automation & Metadata
+- `.github/workflows/docker-publish.yml`: GitHub Actions workflow that builds the container image
+  on pushes to `main` (or manual dispatch), authenticates against GHCR, and pushes the image tagged
+  as `latest` and with the commit SHA.
+- `.gitmodules`: Declares the two Git submodules that hold the OrpheusDL core and the Qobuz
+  provider module. You must run `git submodule update --init --recursive` before building so the
+  Dockerfile copy steps succeed.
+
+### Documentation & Guidance
+- `AGENTS.md`: Living knowledge base for repository conventions. Update this file whenever you
+  discover new behaviours or workflows.
+- `README.md`: User-facing overview that currently focuses on runtime behaviour, container usage,
+  and the environment variables that feed Qobuz credentials into `settings.json` at startup.
+
+### Container Build & Entrypoint
+- `Dockerfile`: Alpine-based build. Installs OS dependencies, copies repo contents, initialises
+  submodules, installs OrpheusDL Python requirements, then stages OrpheusDL and the Qobuz module
+  under `/orpheusdl`. Sets `/usr/local/bin/docker-entrypoint.sh` as the entrypoint and switches the
+  working directory to `/orpheusdl` for runtime.
+- `docker-entrypoint.sh`: Runtime orchestration script. Ensures list files exist, syncs Qobuz
+  credentials from environment variables into `/orpheusdl/config/settings.json`, manages default
+  behaviour (starts `list_ui_server.py` and a nightly scheduler when no command is supplied), and
+  normalises various OrpheusDL commands to run with unbuffered Python output inside the container.
+
+### Runtime Services & Configuration
+- `list_ui_server.py`: Threaded HTTP server for managing the artist/album/track list files. Exposes
+  a small HTML interface, serialises file access with locks, streams asynchronous status banners,
+  and mirrors the scheduler’s sanitisation so ad-hoc entries behave the same way.
+- `settings.json`: Default OrpheusDL configuration baked into the image. Defines download paths,
+  quality settings, formatting templates, lyrics/cover behaviour, playlist options, codec
+  conversions, and placeholder Qobuz credentials that are overwritten by the entrypoint when
+  environment variables are supplied.
+
+### Third-Party Source Mirrors
+- `external/orpheusdl`: Git submodule pointing to the upstream OrpheusDL project. Populated during
+  builds; contents are copied into `/orpheusdl/`.
+- `external/orpheusdl-qobuz`: Git submodule for the Qobuz provider. Copied into
+  `/orpheusdl/modules/qobuz/` during the image build.
+
