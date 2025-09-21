@@ -16,6 +16,7 @@ class _TimeoutClient:
 class _DummyHandler(list_ui_server.ListRequestHandler):
     def __init__(self):
         self.responses = []
+        self.client_address = ("127.0.0.1", 0)
 
     def send_json(self, payload, status: HTTPStatus = HTTPStatus.OK) -> None:  # type: ignore[override]
         self.responses.append((payload, status))

@@ -183,7 +183,7 @@ if _ORPHEUSDL_PATH.exists():
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-_QOBUZ_MODULE_LOCK = threading.Lock()
+_QOBUZ_MODULE_LOCK = threading.RLock()
 _QOBUZ_API_MODULE = None
 _QOBUZ_CLIENT = None
 _QOBUZ_CLIENT_CREDS: Optional[Dict[str, str]] = None
@@ -528,6 +528,7 @@ def _run_artist_download(artist_id: str) -> None:
         )
         _enqueue_async_message(
             f"Download failed for artist {artist_id}: exit code {result.returncode}. Check logs for details.",
+
             True,
         )
     else:
@@ -790,10 +791,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
-
+          
         success, add_message = add_entry(
             "artist", artist_id, display_name=artist_name
         )
+
         if not success:
             self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
             return
