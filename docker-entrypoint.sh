@@ -11,6 +11,52 @@ for list in artists albums tracks; do
     fi
 done
 
+process_list() {
+    local kind="$1"
+    local file="$2"
+
+    [ -f "$file" ] || return 0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+
+        if [ -z "$line" ] || [[ "$line" == \#* ]]; then
+            continue
+        fi
+
+        echo "[lists] running luckysearch for $kind: $line"
+        if ! python3 -u orpheus.py luckysearch qobuz "$kind" "$line"; then
+            echo "[lists] command failed for $kind entry: $line" >&2
+        fi
+    done < "$file"
+}
+
+seconds_until_midnight() {
+    python3 - <<'PY'
+from datetime import datetime, timedelta
+
+now = datetime.now()
+target = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+seconds = int((target - now).total_seconds())
+print(seconds if seconds > 0 else 0)
+PY
+}
+
+run_daily_jobs() {
+    while true; do
+        wait_seconds="$(seconds_until_midnight)"
+        if [ -z "$wait_seconds" ] || ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then
+            wait_seconds=60
+        fi
+        echo "[scheduler] sleeping $wait_seconds seconds until midnight"
+        sleep "$wait_seconds"
+        for kind in artist album track; do
+            process_list "$kind" "$lists_dir/${kind}s.txt"
+        done
+    done
+}
+
 
 python3 <<'PY'
 import json
@@ -52,39 +98,40 @@ export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
 cmd=("$@")
 
+if [ "${#cmd[@]}" -eq 0 ]; then
+    run_daily_jobs
+    exit 0
+fi
+
 if [ "${cmd[0]:-}" = "orpheusdl" ]; then
     cmd=("${cmd[@]:1}")
 fi
 
-if [ "${#cmd[@]}" -eq 0 ]; then
-    cmd=(python3 -u /orpheusdl/orpheus.py)
-else
-    case "${cmd[0]}" in
-        orpheus.py|./orpheus.py)
-            cmd=(python3 -u "${cmd[@]}")
-            ;;
-        download|search|luckysearch|settings|sessions)
-            cmd=(python3 -u orpheus.py "${cmd[@]}")
-            ;;
-        -*)
-            cmd=(python3 -u orpheus.py "${cmd[@]}")
-            ;;
-        python*|*/python*)
-            python_cmd="${cmd[0]}"
-            rest=("${cmd[@]:1}")
-            has_unbuffered=0
-            for arg in "${cmd[@]}"; do
-                if [ "$arg" = "-u" ]; then
-                    has_unbuffered=1
-                    break
-                fi
-            done
-            if [ $has_unbuffered -eq 0 ]; then
-                cmd=("$python_cmd" -u "${rest[@]}")
+case "${cmd[0]}" in
+    orpheus.py|./orpheus.py)
+        cmd=(python3 -u "${cmd[@]}")
+        ;;
+    download|search|luckysearch|settings|sessions)
+        cmd=(python3 -u orpheus.py "${cmd[@]}")
+        ;;
+    -*)
+        cmd=(python3 -u orpheus.py "${cmd[@]}")
+        ;;
+    python*|*/python*)
+        python_cmd="${cmd[0]}"
+        rest=("${cmd[@]:1}")
+        has_unbuffered=0
+        for arg in "${cmd[@]}"; do
+            if [ "$arg" = "-u" ]; then
+                has_unbuffered=1
+                break
             fi
-            ;;
-    esac
-fi
+        done
+        if [ $has_unbuffered -eq 0 ]; then
+            cmd=("$python_cmd" -u "${rest[@]}")
+        fi
+        ;;
+esac
 
 set -- "${cmd[@]}"
 
