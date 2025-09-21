@@ -13,7 +13,7 @@
             "album_format": "{artist}/{name}{explicit} {quality}",
             "playlist_format": "{name}{explicit}",
             "track_filename_format": "{track_number}. {name}{explicit} {sample_rate} {bit_depth}",
-            "single_full_path_format": "{artist}/{name}/{name}{explicit} {sample_rate} {bit_depth}",
+            "single_full_path_format": "{artist}/{name}{explicit} {sample_rate} {bit_depth}",
             "enable_zfill": true,
             "force_album_format": true
         },
