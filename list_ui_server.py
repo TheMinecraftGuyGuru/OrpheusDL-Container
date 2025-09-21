@@ -2,6 +2,7 @@
 """Simple web UI for managing OrpheusDL list files."""
 from __future__ import annotations
 
+import csv
 import functools
 import html
 import importlib.util
@@ -208,7 +209,40 @@ _async_messages: List[Tuple[str, bool]] = []
 
 
 def _list_path(kind: str) -> Path:
+    if kind == "artist":
+        return LISTS_DIR / "artists.csv"
     return LISTS_DIR / f"{kind}s.txt"
+
+
+def _read_artist_entries_locked() -> List[Dict[str, str]]:
+    path = _list_path("artist")
+    if not path.exists():
+        return []
+
+    entries: List[Dict[str, str]] = []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if not row:
+                continue
+            artist_id = row[0].strip()
+            artist_name = row[1].strip() if len(row) > 1 else ""
+            if not artist_id:
+                continue
+            entries.append({"id": artist_id, "name": artist_name})
+    return entries
+
+
+def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
+    path = _list_path("artist")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        for entry in entries:
+            artist_id = str(entry.get("id", "")).strip()
+            if not artist_id:
+                continue
+            writer.writerow([artist_id, str(entry.get("name", "")).strip()])
 
 
 def _load_qobuz_api_module():
@@ -366,11 +400,40 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
 def ensure_lists_exist() -> None:
     LISTS_DIR.mkdir(parents=True, exist_ok=True)
     with _lock:
+        artist_path = _list_path("artist")
+        if not artist_path.exists():
+            legacy_path = LISTS_DIR / "artists.txt"
+            if legacy_path.exists():
+                legacy_entries: List[Dict[str, str]] = []
+                for line in legacy_path.read_text(encoding="utf-8").splitlines():
+                    artist_id = line.strip()
+                    if not artist_id:
+                        continue
+                    legacy_entries.append({"id": artist_id, "name": artist_id})
+                _write_artist_entries_locked(legacy_entries)
+                logging.info(
+                    "Migrated %s artist entries from legacy artists.txt to artists.csv.",
+                    len(legacy_entries),
+                )
+                try:
+                    legacy_path.unlink()
+                except OSError:
+                    logging.warning("Failed to remove legacy artists.txt file.")
+            else:
+                artist_path.parent.mkdir(parents=True, exist_ok=True)
+                artist_path.touch(exist_ok=True)
+
         for kind in LIST_LABELS:
+            if kind == "artist":
+                continue
             _list_path(kind).touch(exist_ok=True)
 
 
-def read_entries(kind: str) -> List[str]:
+def read_entries(kind: str) -> List[str] | List[Dict[str, str]]:
+    if kind == "artist":
+        with _lock:
+            return _read_artist_entries_locked()
+
     path = _list_path(kind)
     if not path.exists():
         return []
@@ -379,10 +442,27 @@ def read_entries(kind: str) -> List[str]:
     return [line.strip() for line in lines if line.strip()]
 
 
-def add_entry(kind: str, value: str) -> Tuple[bool, str]:
+def add_entry(
+    kind: str,
+    value: str,
+    *,
+    display_name: str | None = None,
+) -> Tuple[bool, str]:
     value = value.strip()
     if not value:
         return False, "Value cannot be empty."
+
+    if kind == "artist":
+        artist_id = value
+        artist_name = (display_name or "").strip() or artist_id
+        with _lock:
+            entries = _read_artist_entries_locked()
+            if any(entry["id"] == artist_id for entry in entries):
+                return False, f"{LIST_LABELS[kind][:-1]} already present."
+            entries.append({"id": artist_id, "name": artist_name})
+            _write_artist_entries_locked(entries)
+        return True, f"Added {LIST_LABELS[kind][:-1]} '{artist_name}'."
+
     path = _list_path(kind)
     with _lock:
         entries = read_entries(kind)
@@ -430,8 +510,6 @@ def _run_artist_download(artist_id: str) -> None:
         result = subprocess.run(
             command,
             cwd="/orpheusdl",
-            capture_output=True,
-            text=True,
             check=False,
         )
     except Exception as exc:  # pragma: no cover - subprocess failure
@@ -443,17 +521,14 @@ def _run_artist_download(artist_id: str) -> None:
         return
 
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip()
-        detail = stderr.splitlines()[-1] if stderr else stdout.splitlines()[-1] if stdout else "see logs"
         logging.error(
-            "Download command exited with %s for artist %s: %s",
+            "Download command exited with %s for artist %s. See docker logs for output.",
             result.returncode,
             artist_id,
-            detail,
         )
         _enqueue_async_message(
-            f"Download failed for artist {artist_id}: {detail}",
+            f"Download failed for artist {artist_id}: exit code {result.returncode}. Check logs for details.",
+
             True,
         )
     else:
@@ -496,8 +571,6 @@ def _run_luckysearch(kind: str, value: str) -> None:
         result = subprocess.run(
             command,
             cwd="/orpheusdl",
-            capture_output=True,
-            text=True,
             check=False,
         )
     except Exception as exc:  # pragma: no cover - subprocess failure
@@ -509,14 +582,14 @@ def _run_luckysearch(kind: str, value: str) -> None:
         return
 
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        stdout = (result.stdout or "").strip()
-        detail = stderr.splitlines()[-1] if stderr else stdout.splitlines()[-1] if stdout else "see logs"
         logging.error(
-            "Luckysearch exited with %s for %s: %s", result.returncode, kind, value
+            "Luckysearch exited with %s for %s:%s. See docker logs for output.",
+            result.returncode,
+            kind,
+            value,
         )
         _enqueue_async_message(
-            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': {detail}",
+            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': exit code {result.returncode}. Check logs for details.",
             True,
         )
     else:
@@ -550,6 +623,15 @@ def _trigger_luckysearch(kind: str, value: str) -> None:
 def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     path = _list_path(kind)
     with _lock:
+        if kind == "artist":
+            entries = _read_artist_entries_locked()
+            if index < 0 or index >= len(entries):
+                return False, "Entry not found."
+            removed_entry = entries.pop(index)
+            _write_artist_entries_locked(entries)
+            label = removed_entry.get("name") or removed_entry.get("id") or ""
+            return True, f"Removed {LIST_LABELS[kind][:-1]} '{label}'."
+
         entries = read_entries(kind)
         if index < 0 or index >= len(entries):
             return False, "Entry not found."
@@ -709,8 +791,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
+          
+        success, add_message = add_entry(
+            "artist", artist_id, display_name=artist_name
+        )
 
-        success, add_message = add_entry("artist", artist_id)
         if not success:
             self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
             return
@@ -738,17 +823,27 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
     def handle_add(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
-        value = data.get("value", "")
+        value = data.get("value", "").strip()
         label = data.get("label", "").strip()
         lookup = data.get("lookup", "").strip()
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
             return
-        success, message = add_entry(kind, value)
+        if kind == "artist":
+            success, message = add_entry(
+                kind,
+                value,
+                display_name=label or value,
+            )
+        else:
+            success, message = add_entry(kind, value)
         if success:
-            if label:
+            if label and kind != "artist":
                 message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
-            _trigger_luckysearch(kind, (lookup or label or value).strip())
+            if kind == "artist":
+                _trigger_artist_download(value)
+            else:
+                _trigger_luckysearch(kind, (lookup or label or value).strip())
         self.redirect_home(message, is_error=not success)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
@@ -776,14 +871,30 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             entries = read_entries(kind)
             row_items = []
             for idx, entry in enumerate(entries):
-                row_items.append(
-                    f"<li><span>{html.escape(entry)}</span> "
-                    f"<form method=\"post\" action=\"/delete\" class=\"inline\">"
-                    f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
-                    f"<input type=\"hidden\" name=\"index\" value=\"{idx}\">"
-                    f"<button type=\"submit\" class=\"delete\">Remove</button>"
-                    f"</form></li>"
-                )
+                if kind == "artist" and isinstance(entry, dict):
+                    artist_id = entry.get("id", "")
+                    artist_name = entry.get("name", "") or artist_id
+                    row_items.append(
+                        "<li>"
+                        "<div class=\"entry-text\">"
+                        f"<div class=\"entry-primary\">{html.escape(artist_name)}</div>"
+                        f"<div class=\"entry-secondary\">ID: {html.escape(artist_id)}</div>"
+                        "</div>"
+                        f"<form method=\"post\" action=\"/delete\" class=\"inline\">"
+                        f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
+                        f"<input type=\"hidden\" name=\"index\" value=\"{idx}\">"
+                        f"<button type=\"submit\" class=\"delete\">Remove</button>"
+                        "</form></li>"
+                    )
+                else:
+                    row_items.append(
+                        f"<li><span>{html.escape(str(entry))}</span> "
+                        f"<form method=\"post\" action=\"/delete\" class=\"inline\">"
+                        f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
+                        f"<input type=\"hidden\" name=\"index\" value=\"{idx}\">"
+                        f"<button type=\"submit\" class=\"delete\">Remove</button>"
+                        f"</form></li>"
+                    )
             rows_html = "\n".join(row_items) or "<li class=\"empty\">No entries yet.</li>"
             placeholder = f"Add new {kind}"
             if kind == "artist":
@@ -825,6 +936,8 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             "h1{margin-top:0;}section{background:#1f2a3a;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem;}"
             "h2{margin-top:0;}ul{list-style:none;padding:0;}li{display:flex;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.08);}"
             "li:last-child{border-bottom:none;}li span{flex:1;}form.inline{display:inline;}"
+            "li .entry-text{flex:1;display:flex;flex-direction:column;gap:0.25rem;}"
+            ".entry-secondary{font-size:0.85rem;color:#a3adcb;}"
             "button{background:#2f89fc;color:#fff;border:none;padding:0.4rem 0.8rem;border-radius:4px;cursor:pointer;}"
             "button.delete{background:#d9534f;}button:hover{opacity:0.85;}"
             ".add-form{margin-top:1rem;display:flex;gap:0.5rem;}"
