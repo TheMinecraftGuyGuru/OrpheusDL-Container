@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+lists_dir="/lists"
+mkdir -p "$lists_dir"
+
+for list in artists albums tracks; do
+    file="$lists_dir/${list}.txt"
+    if [ ! -e "$file" ]; then
+        touch "$file"
+    fi
+done
+
+
 python3 <<'PY'
 import json
 import os
