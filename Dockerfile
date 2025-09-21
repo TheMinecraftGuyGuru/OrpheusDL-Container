@@ -42,4 +42,3 @@ RUN mkdir -p /orpheusdl/modules/qobuz \
 WORKDIR /orpheusdl
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["bash"]

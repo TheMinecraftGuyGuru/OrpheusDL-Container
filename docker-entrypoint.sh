@@ -98,6 +98,14 @@ export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
 cmd=("$@")
 
+if [ "${#cmd[@]}" -eq 1 ]; then
+    case "${cmd[0]}" in
+        bash|sh|/bin/sh)
+            cmd=()
+            ;;
+    esac
+fi
+
 if [ "${#cmd[@]}" -eq 0 ]; then
     python3 -u /app/list_ui_server.py &
     web_pid=$!
