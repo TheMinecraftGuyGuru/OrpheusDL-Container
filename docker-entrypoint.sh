@@ -46,7 +46,7 @@ if [ "${cmd[0]:-}" = "orpheusdl" ]; then
 fi
 
 if [ "${#cmd[@]}" -eq 0 ]; then
-    cmd=(/bin/bash -l)
+    cmd=(python3 -u /orpheusdl/orpheus.py)
 else
     case "${cmd[0]}" in
         orpheus.py|./orpheus.py)
