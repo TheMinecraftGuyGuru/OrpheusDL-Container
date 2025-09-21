@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
 import subprocess
@@ -11,13 +12,160 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 LIST_LABELS: Dict[str, str] = {
     "artist": "Artists",
     "album": "Albums",
     "track": "Tracks",
 }
+
+ARTIST_SEARCH_FORM = """
+<div class=\"artist-search\">
+  <h3>Search Qobuz</h3>
+  <div class=\"search-controls\">
+    <input type=\"search\" id=\"artist-search-input\" placeholder=\"Search Qobuz artists\" aria-label=\"Search Qobuz artists\">
+    <button type=\"button\" id=\"artist-search-button\">Search</button>
+  </div>
+  <div id=\"artist-search-results\" class=\"search-results\">
+    <div class=\"search-empty\">Use the search to add artists by Qobuz ID.</div>
+  </div>
+</div>
+""".strip()
+
+ARTIST_SEARCH_SCRIPT = """
+<script>
+(function() {
+  const input = document.getElementById('artist-search-input');
+  const button = document.getElementById('artist-search-button');
+  const results = document.getElementById('artist-search-results');
+  if (!input || !results) {
+    return;
+  }
+
+  let activeController = null;
+  const escapeMap = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"};
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, (char) => escapeMap[char] || char);
+  }
+
+  function showStatus(message) {
+    results.innerHTML = '<div class="search-empty">' + escapeHtml(message) + '</div>';
+  }
+
+  function render(items) {
+    if (!Array.isArray(items) || !items.length) {
+      showStatus('No artists found.');
+      return;
+    }
+
+    const markup = items.map((item) => {
+      const image = item.image
+        ? '<img src="' + escapeHtml(item.image) + '" alt="' + escapeHtml(item.name) + '" loading="lazy">'
+        : '<div class="no-image" aria-hidden="true"></div>';
+      return (
+        '<div class="search-result">' +
+        image +
+        '<div class="search-meta">' +
+        '<div class="search-name">' + escapeHtml(item.name) + '</div>' +
+        '<div class="search-id">ID: ' + escapeHtml(item.id) + '</div>' +
+        '<button type="button" class="search-add" data-artist-id="' + escapeHtml(item.id) + '" data-artist-name="' + escapeHtml(item.name) + '">Add</button>' +
+        '</div></div>'
+      );
+    }).join('');
+
+    results.innerHTML = markup;
+  }
+
+  async function runSearch() {
+    const query = input.value.trim();
+    if (!query) {
+      showStatus('Enter a search term.');
+      return;
+    }
+
+    if (activeController) {
+      activeController.abort();
+    }
+
+    const controller = new AbortController();
+    activeController = controller;
+    showStatus('Searching…');
+
+    try {
+      const response = await fetch('/api/artist-search?q=' + encodeURIComponent(query), {signal: controller.signal});
+      if (!response.ok) {
+        let detail = 'HTTP ' + response.status;
+        try {
+          const data = await response.json();
+          if (data && data.error) {
+            detail = data.error;
+          }
+        } catch (_) {
+          const text = await response.text();
+          if (text) {
+            detail = text;
+          }
+        }
+        throw new Error(detail);
+      }
+
+      const data = await response.json();
+      render(data.results || []);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        return;
+      }
+      showStatus('Search failed: ' + error.message);
+    } finally {
+      if (activeController === controller) {
+        activeController = null;
+      }
+    }
+  }
+
+  function submitArtist(id, name) {
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/add';
+
+    const fields = {list: 'artist', value: 'qobuz:artist:' + id, label: name, lookup: name};
+    Object.keys(fields).forEach((key) => {
+      const field = document.createElement('input');
+      field.type = 'hidden';
+      field.name = key;
+      field.value = fields[key];
+      form.appendChild(field);
+    });
+
+    document.body.appendChild(form);
+    form.submit();
+  }
+
+  if (button) {
+    button.addEventListener('click', runSearch);
+  }
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      runSearch();
+    }
+  });
+
+  results.addEventListener('click', (event) => {
+    const buttonEl = event.target.closest('button[data-artist-id]');
+    if (!buttonEl) {
+      return;
+    }
+    submitArtist(buttonEl.getAttribute('data-artist-id'), buttonEl.getAttribute('data-artist-name') || '');
+  });
+})();
+</script>
+""".strip()
 
 LISTS_DIR = Path(os.environ.get("LISTS_DIR", "/data/lists"))
 WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
@@ -30,6 +178,72 @@ _async_messages: List[Tuple[str, bool]] = []
 
 def _list_path(kind: str) -> Path:
     return LISTS_DIR / f"{kind}s.txt"
+
+
+def _get_qobuz_app_id() -> str | None:
+    for key in ("QOBUZ_APP_ID", "APP_ID", "app_id"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
+    app_id = _get_qobuz_app_id()
+    if not app_id:
+        raise RuntimeError("Qobuz app_id is not configured.")
+
+    if limit <= 0:
+        limit = 10
+
+    params = {
+        "app_id": app_id,
+        "type": "artists",
+        "query": query,
+        "limit": str(limit),
+    }
+    url = "https://www.qobuz.com/api.json/0.2/search/get?" + urlencode(params)
+    request = Request(url, headers={"User-Agent": "OrpheusDL-ListUI/1.0"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = response.read()
+    except HTTPError as exc:
+        raise RuntimeError(f"Qobuz search returned HTTP {exc.code}.") from exc
+    except URLError as exc:  # pragma: no cover - network failure
+        raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
+
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError as exc:  # pragma: no cover - unexpected payload
+        raise RuntimeError("Unexpected response from Qobuz search.") from exc
+
+    artists = data.get("artists", {}) or {}
+    items = artists.get("items") or []
+    results: List[Dict[str, str]] = []
+    for item in items:
+        artist_id = item.get("id")
+        name = item.get("name") or item.get("title")
+        if not artist_id or not name:
+            continue
+
+        images = item.get("image") or item.get("images") or {}
+        image_url = (
+            images.get("large")
+            or images.get("extralarge")
+            or images.get("medium")
+            or images.get("small")
+            or item.get("picture")
+        )
+
+        results.append(
+            {
+                "id": str(artist_id),
+                "name": str(name),
+                "image": str(image_url) if image_url else "",
+            }
+        )
+
+    return results
 
 
 def ensure_lists_exist() -> None:
@@ -188,6 +402,10 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/artist-search":
+            self.handle_artist_search(parsed)
+            return
+
         if parsed.path not in {"", "/"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
             return
@@ -218,15 +436,43 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
+    def handle_artist_search(self, parsed) -> None:
+        params = parse_qs(parsed.query)
+        query = (params.get("q") or [""])[0].strip()
+        limit_raw = (params.get("limit") or ["10"])[0]
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = 10
+
+        if not query:
+            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            results = _qobuz_artist_search(query, limit=limit)
+        except RuntimeError as exc:
+            message = str(exc)
+            status = HTTPStatus.SERVICE_UNAVAILABLE if "app_id" in message else HTTPStatus.BAD_GATEWAY
+            logging.warning("Artist search failed: %s", message)
+            self.send_json({"error": message}, status=status)
+            return
+
+        self.send_json({"results": results})
+
     def handle_add(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
         value = data.get("value", "")
+        label = data.get("label", "").strip()
+        lookup = data.get("lookup", "").strip()
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
             return
         success, message = add_entry(kind, value)
         if success:
-            _trigger_luckysearch(kind, value.strip())
+            if label:
+                message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
+            _trigger_luckysearch(kind, (lookup or label or value).strip())
         self.redirect_home(message, is_error=not success)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
@@ -263,17 +509,24 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                     f"</form></li>"
                 )
             rows_html = "\n".join(row_items) or "<li class=\"empty\">No entries yet.</li>"
-            sections.append(
-                f"<section>"
-                f"<h2>{html.escape(label)}</h2>"
-                f"<ul>\n{rows_html}\n</ul>"
-                f"<form method=\"post\" action=\"/add\" class=\"add-form\">"
-                f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
-                f"<input type=\"text\" name=\"value\" placeholder=\"Add new {kind}\" required>"
-                f"<button type=\"submit\">Add</button>"
-                f"</form>"
-                f"</section>"
-            )
+            placeholder = f"Add new {kind}"
+            if kind == "artist":
+                placeholder = "Add artist ID"
+
+            section_parts = [
+                "<section>",
+                f"<h2>{html.escape(label)}</h2>",
+                f"<ul>\n{rows_html}\n</ul>",
+                f"<form method=\"post\" action=\"/add\" class=\"add-form\">",
+                f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">",
+                f"<input type=\"text\" name=\"value\" placeholder=\"{html.escape(placeholder)}\" required>",
+                f"<button type=\"submit\">Add</button>",
+                "</form>",
+            ]
+            if kind == "artist":
+                section_parts.append(ARTIST_SEARCH_FORM)
+            section_parts.append("</section>")
+            sections.append("".join(section_parts))
 
         banners: List[Tuple[str, bool]] = []
         if message:
@@ -304,15 +557,37 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             ".banner.info{background:#2f89fc33;border:1px solid #2f89fc;}"
             ".banner.error{background:#d9534f33;border:1px solid #d9534f;}"
             ".empty{color:#a3adcb;font-style:italic;}"
+            ".artist-search{margin-top:1.5rem;}"
+            ".artist-search h3{margin:0 0 0.75rem;font-size:1.1rem;}"
+            ".search-controls{display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;}"
+            ".search-controls input[type=search]{flex:1;padding:0.45rem;border-radius:4px;border:1px solid #3c4b63;background:#0d141f;color:#f2f2f2;}"
+            ".search-controls button{background:#1bbf72;}"
+            ".search-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.75rem;}"
+            ".search-result{display:flex;gap:0.75rem;background:#152030;border-radius:6px;padding:0.75rem;align-items:center;}"
+            ".search-result img,.search-result .no-image{width:64px;height:64px;border-radius:50%;object-fit:cover;background:#0d141f;}"
+            ".search-result .no-image{display:flex;align-items:center;justify-content:center;color:#6c7898;font-size:0.75rem;}"
+            ".search-meta{flex:1;display:flex;flex-direction:column;gap:0.35rem;}"
+            ".search-add{align-self:flex-start;background:#1bbf72;}"
+            ".search-id{font-size:0.8rem;color:#a3adcb;}"
+            ".search-empty{color:#a3adcb;font-style:italic;}"
             "</style>"
             "</head>"
             "<body>"
             "<h1>OrpheusDL Lists</h1>"
             f"{message_html}"
             f"{''.join(sections)}"
+            f"{ARTIST_SEARCH_SCRIPT}"
             "</body>"
             "</html>"
         )
+
+    def send_json(self, payload: Dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         logging.info("%s - %s", self.address_string(), format % args)
