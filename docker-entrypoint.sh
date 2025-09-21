@@ -99,10 +99,12 @@ export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 cmd=("$@")
 
 if [ "${#cmd[@]}" -eq 0 ]; then
+    python3 -u /app/list_ui_server.py &
+    web_pid=$!
+    trap 'kill "$web_pid" 2>/dev/null || true' EXIT INT TERM
     run_daily_jobs
     exit 0
 fi
-
 if [ "${cmd[0]:-}" = "orpheusdl" ]; then
     cmd=("${cmd[@]:1}")
 fi
