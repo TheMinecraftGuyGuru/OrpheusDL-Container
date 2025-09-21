@@ -25,26 +25,26 @@ LIST_LABELS: Dict[str, str] = {
     "track": "Tracks",
 }
 
-ARTIST_SEARCH_FORM = """
+ARTIST_SEARCH_SECTION = """
 <div class=\"artist-search\">
-  <h3>Search Qobuz</h3>
-  <div class=\"search-controls\">
-    <input type=\"search\" id=\"artist-search-input\" placeholder=\"Search Qobuz artists\" aria-label=\"Search Qobuz artists\">
-    <button type=\"button\" id=\"artist-search-button\">Search</button>
-  </div>
-  <div id=\"artist-search-results\" class=\"search-results\">
-    <div class=\"search-empty\">Use the search to add artists by Qobuz ID.</div>
-  </div>
+  <h3>Search Qobuz Artists</h3>
+  <form id=\"artist-search-form\" class=\"search-controls\">
+    <input type=\"search\" id=\"artist-search-input\" placeholder=\"Search Qobuz artists\" aria-label=\"Search Qobuz artists\" required>
+    <button type=\"submit\" id=\"artist-search-button\">Search</button>
+  </form>
+  <div id=\"artist-search-status\" class=\"search-status\">Use the search to add artists by Qobuz ID.</div>
+  <ul id=\"artist-search-results\" class=\"search-results\"></ul>
 </div>
 """.strip()
 
 ARTIST_SEARCH_SCRIPT = """
 <script>
 (function() {
+  const form = document.getElementById('artist-search-form');
   const input = document.getElementById('artist-search-input');
-  const button = document.getElementById('artist-search-button');
   const results = document.getElementById('artist-search-results');
-  if (!input || !results) {
+  const status = document.getElementById('artist-search-status');
+  if (!form || !input || !results || !status) {
     console.warn('[ArtistSearch] Search controls not found in the document.');
     return;
   }
@@ -52,68 +52,60 @@ ARTIST_SEARCH_SCRIPT = """
   let activeController = null;
   const escapeMap = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': '&quot;', "'": "&#39;"};
 
-  console.log('[ArtistSearch] Initialised search UI elements.');
-
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, (char) => escapeMap[char] || char);
   }
 
-  function showStatus(message) {
-    results.innerHTML = '<div class="search-empty">' + escapeHtml(message) + '</div>';
+  function setStatus(message) {
+    status.textContent = message;
+    status.style.display = message ? 'block' : 'none';
   }
 
   function render(items) {
     if (!Array.isArray(items) || !items.length) {
-      showStatus('No artists found.');
+      results.innerHTML = '';
+      setStatus('No artists found.');
       return;
     }
 
-    const markup = items.map((item) => {
-      const image = item.image
-        ? '<img src="' + escapeHtml(item.image) + '" alt="' + escapeHtml(item.name) + '" loading="lazy">'
-        : '<div class="no-image" aria-hidden="true"></div>';
-      return (
-        '<div class="search-result">' +
-        image +
-        '<div class="search-meta">' +
-        '<div class="search-name">' + escapeHtml(item.name) + '</div>' +
-        '<div class="search-id">ID: ' + escapeHtml(item.id) + '</div>' +
-        '<button type="button" class="search-add" data-artist-id="' + escapeHtml(item.id) + '" data-artist-name="' + escapeHtml(item.name) + '">Add</button>' +
-        '</div></div>'
-      );
-    }).join('');
+    const markup = items.map((item) => (
+      '<li class="search-result">' +
+      '<div class="search-meta">' +
+      '<div class="search-name">' + escapeHtml(item.name || '') + '</div>' +
+      '<div class="search-id">ID: ' + escapeHtml(item.id || '') + '</div>' +
+      '</div>' +
+      '<button type="button" class="search-add" data-artist-id="' + escapeHtml(item.id || '') + '" data-artist-name="' + escapeHtml(item.name || '') + '">Select</button>' +
+      '</li>'
+    )).join('');
 
     results.innerHTML = markup;
+    setStatus('Select an artist to add and download.');
   }
 
-  async function runSearch() {
+  async function runSearch(event) {
+    event.preventDefault();
     const query = input.value.trim();
     if (!query) {
-      console.warn('[ArtistSearch] Search attempted without a query.');
-      showStatus('Enter a search term.');
+      setStatus('Enter a search term.');
       return;
     }
 
     if (activeController) {
-      console.log('[ArtistSearch] Aborting previous search request.');
       activeController.abort();
     }
 
     const controller = new AbortController();
     activeController = controller;
-    console.log('[ArtistSearch] Dispatching search request.', {query, limit: 10});
-    showStatus('Searching…');
+    setStatus('Searching…');
+    results.innerHTML = '';
 
     try {
       const response = await fetch('/api/artist-search?q=' + encodeURIComponent(query), {signal: controller.signal});
-      console.log('[ArtistSearch] Received response from server.', {status: response.status});
       if (!response.ok) {
         let detail = 'HTTP ' + response.status;
         try {
           const data = await response.json();
-          if (data && data.error) {
-            detail = data.error;
-          }
+          detail = data.error || data.message || detail;
         } catch (_) {
           const text = await response.text();
           if (text) {
@@ -123,16 +115,14 @@ ARTIST_SEARCH_SCRIPT = """
         throw new Error(detail);
       }
 
-      const data = await response.json();
-      console.log('[ArtistSearch] Server returned results.', {count: Array.isArray(data.results) ? data.results.length : null});
-      render(data.results || []);
+      const payload = await response.json();
+      render(payload.results || []);
     } catch (error) {
       if (error.name === 'AbortError') {
-        console.log('[ArtistSearch] Search request aborted.');
         return;
       }
       console.error('[ArtistSearch] Search failed.', error);
-      showStatus('Search failed: ' + error.message);
+      setStatus('Search failed: ' + error.message);
     } finally {
       if (activeController === controller) {
         activeController = null;
@@ -140,47 +130,42 @@ ARTIST_SEARCH_SCRIPT = """
     }
   }
 
-  function submitArtist(id, name) {
-    console.log('[ArtistSearch] Submitting artist to add form.', {id, name});
-    const form = document.createElement('form');
-    form.method = 'post';
-    form.action = '/add';
+  form.addEventListener('submit', runSearch);
 
-    const fields = {list: 'artist', value: 'qobuz:artist:' + id, label: name, lookup: name};
-    Object.keys(fields).forEach((key) => {
-      const field = document.createElement('input');
-      field.type = 'hidden';
-      field.name = key;
-      field.value = fields[key];
-      form.appendChild(field);
-    });
-
-    document.body.appendChild(form);
-    form.submit();
-  }
-
-  if (button) {
-    button.addEventListener('click', runSearch);
-  }
-
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      console.log('[ArtistSearch] Enter key pressed, triggering search.');
-      runSearch();
-    }
-  });
-
-  results.addEventListener('click', (event) => {
-    const buttonEl = event.target.closest('button[data-artist-id]');
-    if (!buttonEl) {
+  results.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-artist-id]');
+    if (!button) {
       return;
     }
-    console.log('[ArtistSearch] Add button clicked from results.', {
-      id: buttonEl.getAttribute('data-artist-id'),
-      name: buttonEl.getAttribute('data-artist-name') || ''
-    });
-    submitArtist(buttonEl.getAttribute('data-artist-id'), buttonEl.getAttribute('data-artist-name') || '');
+
+    const artistId = button.getAttribute('data-artist-id') || '';
+    const artistName = button.getAttribute('data-artist-name') || '';
+    if (!artistId) {
+      return;
+    }
+
+    setStatus('Adding artist…');
+    try {
+      const response = await fetch('/api/artist-select', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: artistId, name: artistName})
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success === false) {
+        const message = payload.error || payload.message || ('HTTP ' + response.status);
+        throw new Error(message);
+      }
+      if (payload.redirect) {
+        window.location.href = payload.redirect;
+        return;
+      }
+      setStatus(payload.message || 'Artist queued for download.');
+      results.innerHTML = '';
+    } catch (error) {
+      console.error('[ArtistSearch] Failed to add artist.', error);
+      setStatus('Failed to add artist: ' + error.message);
+    }
   });
 })();
 </script>
@@ -232,22 +217,29 @@ def _load_qobuz_api_module():
         if _QOBUZ_API_MODULE is not None:
             return _QOBUZ_API_MODULE
 
-        module_path = BASE_DIR / "external" / "orpheusdl-qobuz" / "qobuz_api.py"
-        if not module_path.exists():
-            raise RuntimeError("Qobuz integration is unavailable.")
+        module_paths = [
+            BASE_DIR / "external" / "orpheusdl-qobuz" / "qobuz_api.py",
+            Path("/orpheusdl/modules/qobuz/qobuz_api.py"),
+        ]
 
-        logging.debug("Loading Qobuz API module from %s", module_path)
-        spec = importlib.util.spec_from_file_location(
-            "orpheusdl_qobuz_api", module_path
-        )
-        if spec is None or spec.loader is None:
-            raise RuntimeError("Unable to load Qobuz integration module.")
+        for module_path in module_paths:
+            if not module_path.exists():
+                continue
 
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _QOBUZ_API_MODULE = module
-        logging.info("Qobuz API module loaded successfully.")
-        return module
+            logging.debug("Loading Qobuz API module from %s", module_path)
+            spec = importlib.util.spec_from_file_location(
+                "orpheusdl_qobuz_api", module_path
+            )
+            if spec is None or spec.loader is None:
+                continue
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _QOBUZ_API_MODULE = module
+            logging.info("Qobuz API module loaded successfully from %s.", module_path)
+            return module
+
+        raise RuntimeError("Qobuz integration is unavailable.")
 
 
 def _get_env_value(names: Tuple[str, ...]) -> str:
@@ -424,6 +416,71 @@ def _consume_async_messages() -> List[Tuple[str, bool]]:
         return messages
 
 
+def _run_artist_download(artist_id: str) -> None:
+    command = [
+        "python3",
+        "-u",
+        "orpheus.py",
+        "download",
+        "qobuz",
+        artist_id,
+    ]
+    logging.info("Starting one-time Qobuz download for artist %s.", artist_id)
+    try:
+        result = subprocess.run(
+            command,
+            cwd="/orpheusdl",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:  # pragma: no cover - subprocess failure
+        logging.exception("Failed to launch download for artist %s.", artist_id)
+        _enqueue_async_message(
+            f"Download failed for artist {artist_id}: {exc}",
+            True,
+        )
+        return
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr.splitlines()[-1] if stderr else stdout.splitlines()[-1] if stdout else "see logs"
+        logging.error(
+            "Download command exited with %s for artist %s: %s",
+            result.returncode,
+            artist_id,
+            detail,
+        )
+        _enqueue_async_message(
+            f"Download failed for artist {artist_id}: {detail}",
+            True,
+        )
+    else:
+        logging.info("Download completed successfully for artist %s.", artist_id)
+        _enqueue_async_message(
+            f"Download completed for artist {artist_id}.",
+            False,
+        )
+
+
+def _trigger_artist_download(artist_id: str) -> None:
+    sanitized = sanitize_entry_value(artist_id)
+    if sanitized is None:
+        logging.warning(
+            "Skipping download trigger for invalid artist id: %r", artist_id
+        )
+        return
+
+    worker = threading.Thread(
+        target=_run_artist_download,
+        args=(sanitized,),
+        name="download-artist",
+        daemon=True,
+    )
+    worker.start()
+
+
 def _run_luckysearch(kind: str, value: str) -> None:
     command = [
         "python3",
@@ -552,6 +609,10 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         content_length = int(self.headers.get("Content-Length", "0"))
         payload = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+        if parsed.path == "/api/artist-select":
+            self.handle_artist_select(payload, self.headers.get("Content-Type", ""))
+            return
+
         data = {k: v[0] for k, v in parse_qs(payload).items() if v}
 
         if parsed.path == "/add":
@@ -600,6 +661,80 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             len(results),
         )
         self.send_json({"results": results})
+
+    def handle_artist_select(self, raw_body: str, content_type: str | None) -> None:
+        content_type = (content_type or "").split(";", 1)[0].strip().lower()
+        data: Dict[str, str] = {}
+
+        if content_type == "application/json":
+            try:
+                payload = json.loads(raw_body or "{}")
+            except json.JSONDecodeError:
+                self.send_json(
+                    {"error": "Invalid JSON body."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if value is None:
+                        data[str(key)] = ""
+                    elif isinstance(value, (str, int, float)):
+                        data[str(key)] = str(value)
+                    else:
+                        data[str(key)] = ""
+            else:
+                self.send_json(
+                    {"error": "Invalid request payload."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+        else:
+            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
+
+        artist_id = data.get("id", "").strip()
+        artist_name = data.get("name", "").strip()
+
+        logging.info(
+            "Received artist selection from %s with id=%r name=%r.",
+            self.address_string(),
+            artist_id,
+            artist_name,
+        )
+
+        if not artist_id:
+            self.send_json(
+                {"error": "Missing artist id."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        success, add_message = add_entry("artist", artist_id)
+        if not success:
+            self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
+            return
+
+        logging.info("Artist %s added to list: %s", artist_id, add_message)
+        _trigger_artist_download(artist_id)
+
+        if artist_name and artist_name != artist_id:
+            combined_message = (
+                f"Added artist '{artist_name}' (ID {artist_id}) and started download."
+            )
+        else:
+            combined_message = (
+                f"Added artist ID {artist_id} and started download."
+            )
+
+        redirect = redirect_location(message=combined_message, is_error=False)
+        self.send_json(
+            {
+                "success": True,
+                "message": combined_message,
+                "redirect": redirect,
+            }
+        )
 
     def handle_add(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
@@ -665,7 +800,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 "</form>",
             ]
             if kind == "artist":
-                section_parts.append(ARTIST_SEARCH_FORM)
+                section_parts.append(ARTIST_SEARCH_SECTION)
             section_parts.append("</section>")
             sections.append("".join(section_parts))
 
@@ -703,14 +838,13 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             ".search-controls{display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;}"
             ".search-controls input[type=search]{flex:1;padding:0.45rem;border-radius:4px;border:1px solid #3c4b63;background:#0d141f;color:#f2f2f2;}"
             ".search-controls button{background:#1bbf72;}"
-            ".search-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.75rem;}"
-            ".search-result{display:flex;gap:0.75rem;background:#152030;border-radius:6px;padding:0.75rem;align-items:center;}"
-            ".search-result img,.search-result .no-image{width:64px;height:64px;border-radius:50%;object-fit:cover;background:#0d141f;}"
-            ".search-result .no-image{display:flex;align-items:center;justify-content:center;color:#6c7898;font-size:0.75rem;}"
-            ".search-meta{flex:1;display:flex;flex-direction:column;gap:0.35rem;}"
-            ".search-add{align-self:flex-start;background:#1bbf72;}"
+            ".search-status{color:#a3adcb;font-style:italic;margin-bottom:0.75rem;}"
+            ".search-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.5rem;}"
+            ".search-result{display:flex;align-items:center;justify-content:space-between;background:#152030;border-radius:6px;padding:0.75rem;gap:0.75rem;border:none;}"
+            ".search-meta{display:flex;flex-direction:column;gap:0.35rem;}"
+            ".search-name{font-weight:600;}"
             ".search-id{font-size:0.8rem;color:#a3adcb;}"
-            ".search-empty{color:#a3adcb;font-style:italic;}"
+            ".search-add{background:#1bbf72;}"
             "</style>"
             "</head>"
             "<body>"
