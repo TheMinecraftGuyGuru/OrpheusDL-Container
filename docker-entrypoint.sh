@@ -4,7 +4,44 @@ set -euo pipefail
 lists_dir="/data/lists"
 mkdir -p "$lists_dir"
 
-for list in artists albums tracks; do
+artist_csv="$lists_dir/artists.csv"
+legacy_artist_txt="$lists_dir/artists.txt"
+
+if [ -f "$legacy_artist_txt" ] && [ ! -e "$artist_csv" ]; then
+    migrated_count="$(python3 - "$legacy_artist_txt" "$artist_csv" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+
+rows = []
+with source.open('r', encoding='utf-8') as handle:
+    for line in handle:
+        entry = line.strip()
+        if not entry or entry.startswith('#'):
+            continue
+        rows.append((entry, entry))
+
+target.parent.mkdir(parents=True, exist_ok=True)
+with target.open('w', encoding='utf-8', newline='') as handle:
+    writer = csv.writer(handle)
+    for row in rows:
+        writer.writerow(row)
+
+print(len(rows))
+PY
+    )"
+    echo "[lists] migrated legacy artists.txt to artists.csv with ${migrated_count:-0} entries"
+    rm -f "$legacy_artist_txt"
+fi
+
+if [ ! -e "$artist_csv" ]; then
+    touch "$artist_csv"
+fi
+
+for list in albums tracks; do
     file="$lists_dir/${list}.txt"
     if [ ! -e "$file" ]; then
         touch "$file"
@@ -14,8 +51,45 @@ done
 process_list() {
     local kind="$1"
     local file="$2"
+    local format="${3:-text}"
 
     [ -f "$file" ] || return 0
+
+    if [ "$format" = "csv" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+
+            if [ -z "$line" ]; then
+                continue
+            fi
+
+            echo "[lists] running luckysearch for $kind: $line"
+            if ! python3 -u orpheus.py luckysearch qobuz "$kind" "$line"; then
+                echo "[lists] command failed for $kind entry: $line" >&2
+            fi
+        done < <(python3 - "$file" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    sys.exit(0)
+
+with path.open('r', encoding='utf-8', newline='') as handle:
+    reader = csv.reader(handle)
+    for row in reader:
+        if not row:
+            continue
+        artist_id = (row[0] or '').strip()
+        if not artist_id or artist_id.startswith('#'):
+            continue
+        print(artist_id)
+PY
+        )
+        return 0
+    fi
 
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line#"${line%%[![:space:]]*}"}"
@@ -51,7 +125,8 @@ run_daily_jobs() {
         fi
         echo "[scheduler] sleeping $wait_seconds seconds until midnight"
         sleep "$wait_seconds"
-        for kind in artist album track; do
+        process_list "artist" "$lists_dir/artists.csv" "csv"
+        for kind in album track; do
             process_list "$kind" "$lists_dir/${kind}s.txt"
         done
     done
