@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+import subprocess
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,8 @@ WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("LISTS_WEB_PORT", "8080"))
 
 _lock = threading.RLock()
+_async_lock = threading.Lock()
+_async_messages: List[Tuple[str, bool]] = []
 
 
 def _list_path(kind: str) -> Path:
@@ -57,6 +60,95 @@ def add_entry(kind: str, value: str) -> Tuple[bool, str]:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(value + "\n")
     return True, f"Added {LIST_LABELS[kind][:-1]} '{value}'."
+
+
+def sanitize_entry_value(value: str) -> str | None:
+    """Replicate the scheduler's trimming and comment filtering."""
+
+    sanitized = value.strip()
+    if not sanitized or sanitized.startswith("#"):
+        return None
+    return sanitized
+
+
+def _enqueue_async_message(message: str, is_error: bool) -> None:
+    with _async_lock:
+        _async_messages.append((message, is_error))
+
+
+def _consume_async_messages() -> List[Tuple[str, bool]]:
+    with _async_lock:
+        if not _async_messages:
+            return []
+        messages = list(_async_messages)
+        _async_messages.clear()
+        return messages
+
+
+def _run_luckysearch(kind: str, value: str) -> None:
+    command = [
+        "python3",
+        "-u",
+        "orpheus.py",
+        "luckysearch",
+        "qobuz",
+        kind,
+        value,
+    ]
+    logging.info("Starting luckysearch for %s: %s", kind, value)
+    try:
+        result = subprocess.run(
+            command,
+            cwd="/orpheusdl",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:  # pragma: no cover - subprocess failure
+        logging.exception("Failed to launch luckysearch for %s: %s", kind, value)
+        _enqueue_async_message(
+            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': {exc}",
+            True,
+        )
+        return
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr.splitlines()[-1] if stderr else stdout.splitlines()[-1] if stdout else "see logs"
+        logging.error(
+            "Luckysearch exited with %s for %s: %s", result.returncode, kind, value
+        )
+        _enqueue_async_message(
+            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': {detail}",
+            True,
+        )
+    else:
+        logging.info("Luckysearch succeeded for %s: %s", kind, value)
+
+
+def _trigger_luckysearch(kind: str, value: str) -> None:
+    sanitized = sanitize_entry_value(value)
+    if sanitized is None:
+        logging.info(
+            "Skipping luckysearch for %s entry %r due to scheduler sanitisation.",
+            kind,
+            value,
+        )
+        if value.startswith("#"):
+            _enqueue_async_message(
+                f"Entry '{value}' added to {LIST_LABELS[kind]} but ignored because it starts with '#'.",
+                False,
+            )
+        return
+
+    worker = threading.Thread(
+        target=_run_luckysearch,
+        args=(kind, sanitized),
+        name=f"luckysearch-{kind}",
+        daemon=True,
+    )
+    worker.start()
 
 
 def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
@@ -133,6 +225,8 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             self.redirect_home("Unknown list type.", is_error=True)
             return
         success, message = add_entry(kind, value)
+        if success:
+            _trigger_luckysearch(kind, value.strip())
         self.redirect_home(message, is_error=not success)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
@@ -181,10 +275,15 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 f"</section>"
             )
 
-        message_html = ""
+        banners: List[Tuple[str, bool]] = []
         if message:
-            cls = "error" if is_error else "info"
-            message_html = f"<div class=\"banner {cls}\">{html.escape(message)}</div>"
+            banners.append((message, is_error))
+        banners.extend(_consume_async_messages())
+
+        message_html = "".join(
+            f"<div class=\"banner {'error' if banner_is_error else 'info'}\">{html.escape(banner_message)}</div>"
+            for banner_message, banner_is_error in banners
+        )
 
         return (
             "<!DOCTYPE html>"
