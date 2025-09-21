@@ -503,6 +503,7 @@ def _run_artist_download(artist_id: str) -> None:
         "orpheus.py",
         "download",
         "qobuz",
+        "artist",
         artist_id,
     ]
     logging.info("Starting one-time Qobuz download for artist %s.", artist_id)
