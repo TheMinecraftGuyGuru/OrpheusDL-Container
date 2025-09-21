@@ -36,8 +36,45 @@ if settings_path.exists():
         target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
 
-if [ $# -eq 0 ]; then
-    set -- /bin/bash -l
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+
+cmd=("$@")
+
+if [ "${cmd[0]:-}" = "orpheusdl" ]; then
+    cmd=("${cmd[@]:1}")
 fi
+
+if [ "${#cmd[@]}" -eq 0 ]; then
+    cmd=(/bin/bash -l)
+else
+    case "${cmd[0]}" in
+        orpheus.py|./orpheus.py)
+            cmd=(python3 -u "${cmd[@]}")
+            ;;
+        download|search|luckysearch|settings|sessions)
+            cmd=(python3 -u orpheus.py "${cmd[@]}")
+            ;;
+        -*)
+            cmd=(python3 -u orpheus.py "${cmd[@]}")
+            ;;
+        python*|*/python*)
+            python_cmd="${cmd[0]}"
+            rest=("${cmd[@]:1}")
+            has_unbuffered=0
+            for arg in "${cmd[@]}"; do
+                if [ "$arg" = "-u" ]; then
+                    has_unbuffered=1
+                    break
+                fi
+            done
+            if [ $has_unbuffered -eq 0 ]; then
+                cmd=("$python_cmd" -u "${rest[@]}")
+            fi
+            ;;
+    esac
+fi
+
+set -- "${cmd[@]}"
 
 exec "$@"
