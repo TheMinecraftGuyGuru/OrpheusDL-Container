@@ -9,6 +9,7 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -173,6 +174,7 @@ ARTIST_SEARCH_SCRIPT = """
 """.strip()
 
 LISTS_DIR = Path(os.environ.get("LISTS_DIR", "/data/lists"))
+MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/data/music"))
 WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("LISTS_WEB_PORT", "8080"))
 
@@ -243,6 +245,76 @@ def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
             if not artist_id:
                 continue
             writer.writerow([artist_id, str(entry.get("name", "")).strip()])
+
+
+def _delete_artist_directory(artist_name: str) -> None:
+    artist_name = artist_name.strip()
+    if not artist_name:
+        return
+
+    base_dir = MUSIC_DIR
+    try:
+        base_resolved = base_dir.resolve(strict=False)
+        target = (base_dir / artist_name).resolve(strict=False)
+    except Exception as exc:  # pragma: no cover - unexpected resolution failure
+        logging.warning(
+            "Failed to resolve music directory for artist %r: %s.",
+            artist_name,
+            exc,
+        )
+        return
+
+    try:
+        target.relative_to(base_resolved)
+    except ValueError:
+        logging.warning(
+            "Refusing to delete artist directory outside music base: %s.",
+            target,
+        )
+        return
+
+    if target == base_resolved:
+        logging.warning(
+            "Refusing to delete music base directory for artist %r.",
+            artist_name,
+        )
+        return
+
+    try:
+        path_obj = base_dir / artist_name
+        if path_obj.is_dir():
+            shutil.rmtree(path_obj)
+            logging.info(
+                "Deleted music directory for artist %r at %s.",
+                artist_name,
+                path_obj,
+            )
+        elif path_obj.exists():
+            path_obj.unlink()
+            logging.info(
+                "Deleted music file for artist %r at %s.",
+                artist_name,
+                path_obj,
+            )
+        else:
+            logging.debug(
+                "Music directory for artist %r not found at %s.",
+                artist_name,
+                path_obj,
+            )
+    except FileNotFoundError:
+        logging.debug(
+            "Music directory already missing for artist %r at %s.",
+            artist_name,
+            base_dir / artist_name,
+        )
+    except Exception as exc:  # pragma: no cover - filesystem failure
+        logging.warning(
+            "Failed to delete music directory for artist %r at %s: %s.",
+            artist_name,
+            base_dir / artist_name,
+            exc,
+        )
 
 
 def _load_qobuz_api_module():
@@ -623,6 +695,8 @@ def _trigger_luckysearch(kind: str, value: str) -> None:
 
 def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     path = _list_path(kind)
+    removed_label: str | None = None
+    removed_artist_name: str | None = None
     with _lock:
         if kind == "artist":
             entries = _read_artist_entries_locked()
@@ -630,18 +704,27 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
                 return False, "Entry not found."
             removed_entry = entries.pop(index)
             _write_artist_entries_locked(entries)
-            label = removed_entry.get("name") or removed_entry.get("id") or ""
-            return True, f"Removed {LIST_LABELS[kind][:-1]} '{label}'."
-
-        entries = read_entries(kind)
-        if index < 0 or index >= len(entries):
-            return False, "Entry not found."
-        removed = entries.pop(index)
-        data = "\n".join(entries)
-        if data:
-            data += "\n"
-        path.write_text(data, encoding="utf-8")
-    return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed}'."
+            removed_artist_name = (removed_entry.get("name") or "").strip()
+            removed_label = (
+                removed_artist_name
+                or removed_entry.get("id")
+                or ""
+            )
+        else:
+            entries = read_entries(kind)
+            if index < 0 or index >= len(entries):
+                return False, "Entry not found."
+            removed = entries.pop(index)
+            data = "\n".join(entries)
+            if data:
+                data += "\n"
+            path.write_text(data, encoding="utf-8")
+            removed_label = removed
+    if kind == "artist" and removed_artist_name:
+        _delete_artist_directory(removed_artist_name)
+    if removed_label is None:
+        removed_label = ""
+    return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
 
 
 def normalize_kind(raw: str | None) -> str | None:
