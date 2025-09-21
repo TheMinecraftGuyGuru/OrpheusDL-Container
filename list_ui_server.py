@@ -2,6 +2,7 @@
 """Simple web UI for managing OrpheusDL list files."""
 from __future__ import annotations
 
+import functools
 import html
 import importlib.util
 import json
@@ -15,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
+
+import requests
 
 LIST_LABELS: Dict[str, str] = {
     "artist": "Artists",
@@ -260,6 +263,17 @@ def _get_qobuz_client():
             creds.get("app_secret", ""),
             RuntimeError,
         )
+        request_parent = getattr(session, "s", None) or getattr(session, "session", None)
+        if request_parent is not None and hasattr(request_parent, "request"):
+            original_request = request_parent.request
+
+            @functools.wraps(original_request)
+            def request_with_timeout(method, url, *args, **kwargs):
+                if kwargs.get("timeout") is None:
+                    kwargs["timeout"] = 10
+                return original_request(method, url, *args, **kwargs)
+
+            request_parent.request = request_with_timeout
         token = creds.get("token")
         if token:
             session.auth_token = token
@@ -292,6 +306,8 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                 if detail:
                     raise RuntimeError(str(detail)) from exc
             raise RuntimeError(message) from exc
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError("Qobuz search timed out.") from exc
     except Exception as exc:  # pragma: no cover - network failure
         raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
 
