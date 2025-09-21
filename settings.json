@@ -1,7 +1,7 @@
 {
     "global": {
         "general": {
-            "download_path": "/music",
+            "download_path": "/data/music",
             "download_quality": "hifi",
             "search_limit": 10
         },
