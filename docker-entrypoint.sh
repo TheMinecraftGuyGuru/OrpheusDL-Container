@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-lists_dir="/lists"
+lists_dir="/data/lists"
 mkdir -p "$lists_dir"
 
 for list in artists albums tracks; do
