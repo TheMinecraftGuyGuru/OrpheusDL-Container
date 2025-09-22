@@ -16,7 +16,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
@@ -28,147 +28,368 @@ LIST_LABELS: Dict[str, str] = {
 }
 
 ARTIST_SEARCH_SECTION = """
-<div class=\"artist-search\">
+<div class=\"search-block\" data-search-type=\"artist\">
   <h3>Search Qobuz Artists</h3>
-  <form id=\"artist-search-form\" class=\"search-controls\">
-    <input type=\"search\" id=\"artist-search-input\" placeholder=\"Search Qobuz artists\" aria-label=\"Search Qobuz artists\" required>
-    <button type=\"submit\" id=\"artist-search-button\">Search</button>
+  <form id=\"artist-search-form\" class=\"search-form\" autocomplete=\"off\">
+    <div class=\"search-grid\">
+      <label class=\"input-group\" for=\"artist-search-input\">
+        <span class=\"field-label\">Artist</span>
+        <input type=\"search\" id=\"artist-search-input\" placeholder=\"Search Qobuz artists\" aria-label=\"Search Qobuz artists\" required>
+      </label>
+    </div>
+    <div class=\"search-actions\">
+      <button type=\"submit\" id=\"artist-search-button\" class=\"button primary\">Search</button>
+    </div>
   </form>
   <div id=\"artist-search-status\" class=\"search-status\">Use the search to add artists by Qobuz ID.</div>
   <ul id=\"artist-search-results\" class=\"search-results\"></ul>
 </div>
 """.strip()
 
-ARTIST_SEARCH_SCRIPT = """
+ALBUM_SEARCH_SECTION = """
+<div class=\"search-block\" data-search-type=\"album\">
+  <h3>Search Qobuz Albums</h3>
+  <form id=\"album-search-form\" class=\"search-form\" autocomplete=\"off\">
+    <div class=\"search-grid\">
+      <label class=\"input-group\" for=\"album-search-title\">
+        <span class=\"field-label\">Album</span>
+        <input type=\"search\" id=\"album-search-title\" placeholder=\"Album name\" aria-label=\"Album name\">
+      </label>
+      <label class=\"input-group\" for=\"album-search-artist\">
+        <span class=\"field-label\">Artist</span>
+        <input type=\"search\" id=\"album-search-artist\" placeholder=\"Artist name\" aria-label=\"Album artist\">
+      </label>
+    </div>
+    <div class=\"search-actions\">
+      <button type=\"submit\" id=\"album-search-button\" class=\"button primary\">Search</button>
+    </div>
+  </form>
+  <div id=\"album-search-status\" class=\"search-status\">Provide album and artist names for best results.</div>
+  <ul id=\"album-search-results\" class=\"search-results\"></ul>
+</div>
+""".strip()
+
+TRACK_SEARCH_SECTION = """
+<div class=\"search-block\" data-search-type=\"track\">
+  <h3>Search Qobuz Tracks</h3>
+  <form id=\"track-search-form\" class=\"search-form\" autocomplete=\"off\">
+    <div class=\"search-grid\">
+      <label class=\"input-group\" for=\"track-search-title\">
+        <span class=\"field-label\">Track</span>
+        <input type=\"search\" id=\"track-search-title\" placeholder=\"Track name\" aria-label=\"Track name\">
+      </label>
+      <label class=\"input-group\" for=\"track-search-album\">
+        <span class=\"field-label\">Album</span>
+        <input type=\"search\" id=\"track-search-album\" placeholder=\"Album name\" aria-label=\"Track album\">
+      </label>
+      <label class=\"input-group\" for=\"track-search-artist\">
+        <span class=\"field-label\">Artist</span>
+        <input type=\"search\" id=\"track-search-artist\" placeholder=\"Artist name\" aria-label=\"Track artist\">
+      </label>
+    </div>
+    <div class=\"search-actions\">
+      <button type=\"submit\" id=\"track-search-button\" class=\"button primary\">Search</button>
+    </div>
+  </form>
+  <div id=\"track-search-status\" class=\"search-status\">Combine track, album, and artist names for precise matches.</div>
+  <ul id=\"track-search-results\" class=\"search-results\"></ul>
+</div>
+""".strip()
+
+SEARCH_SCRIPT = """
 <script>
 (function() {
-  const form = document.getElementById('artist-search-form');
-  const input = document.getElementById('artist-search-input');
-  const results = document.getElementById('artist-search-results');
-  const status = document.getElementById('artist-search-status');
-  if (!form || !input || !results || !status) {
-    console.warn('[ArtistSearch] Search controls not found in the document.');
-    return;
-  }
-
-  let activeController = null;
   const escapeMap = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': '&quot;', "'": "&#39;"};
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, (char) => escapeMap[char] || char);
   }
 
-  function setStatus(message) {
-    status.textContent = message;
-    status.style.display = message ? 'block' : 'none';
+  function getFieldValues(fields) {
+    const values = {};
+    fields.forEach((field) => {
+      values[field.id] = field.value.trim();
+    });
+    return values;
   }
 
-  function render(items) {
-    if (!Array.isArray(items) || !items.length) {
+  function joinNonEmpty(parts) {
+    return parts.map((part) => part.trim()).filter(Boolean).join(' ');
+  }
+
+  function attachSearchController(type, config) {
+    const form = document.getElementById(config.formId);
+    const results = document.getElementById(config.resultsId);
+    const status = document.getElementById(config.statusId);
+    const fields = (config.fieldIds || []).map((id) => document.getElementById(id)).filter(Boolean);
+    if (!form || !results || !status || !fields.length) {
+      return;
+    }
+
+    let activeController = null;
+
+    function setStatus(message) {
+      status.textContent = message;
+      status.style.display = message ? 'block' : 'none';
+    }
+
+    function render(items) {
+      if (!Array.isArray(items) || !items.length) {
+        results.innerHTML = '';
+        setStatus(config.emptyMessage || 'No results found.');
+        return;
+      }
+
+      const markup = items.map((item) => config.renderItem(item, escapeHtml)).join('');
+      results.innerHTML = markup;
+      setStatus(config.successPrompt || 'Select an item to add.');
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const values = getFieldValues(fields);
+      const query = config.buildQuery(values);
+      if (!query) {
+        setStatus(config.inputHint || 'Enter search details.');
+        return;
+      }
+
+      if (activeController) {
+        activeController.abort();
+      }
+
+      const controller = new AbortController();
+      activeController = controller;
+      setStatus('Searching…');
       results.innerHTML = '';
-      setStatus('No artists found.');
-      return;
-    }
 
-    const markup = items.map((item) => (
-      '<li class="search-result">' +
-      '<div class="search-meta">' +
-      '<div class="search-name">' + escapeHtml(item.name || '') + '</div>' +
-      '<div class="search-id">ID: ' + escapeHtml(item.id || '') + '</div>' +
-      '</div>' +
-      '<button type="button" class="search-add" data-artist-id="' + escapeHtml(item.id || '') + '" data-artist-name="' + escapeHtml(item.name || '') + '">Select</button>' +
-      '</li>'
-    )).join('');
-
-    results.innerHTML = markup;
-    setStatus('Select an artist to add and download.');
-  }
-
-  async function runSearch(event) {
-    event.preventDefault();
-    const query = input.value.trim();
-    if (!query) {
-      setStatus('Enter a search term.');
-      return;
-    }
-
-    if (activeController) {
-      activeController.abort();
-    }
-
-    const controller = new AbortController();
-    activeController = controller;
-    setStatus('Searching…');
-    results.innerHTML = '';
-
-    try {
-      const response = await fetch('/api/artist-search?q=' + encodeURIComponent(query), {signal: controller.signal});
-      if (!response.ok) {
-        let detail = 'HTTP ' + response.status;
-        try {
-          const data = await response.json();
-          detail = data.error || data.message || detail;
-        } catch (_) {
-          const text = await response.text();
-          if (text) {
-            detail = text;
+      try {
+        const response = await fetch(config.endpoint + '?q=' + encodeURIComponent(query), {signal: controller.signal});
+        if (!response.ok) {
+          let detail = 'HTTP ' + response.status;
+          try {
+            const data = await response.json();
+            detail = data.error || data.message || detail;
+          } catch (_) {
+            const text = await response.text();
+            if (text) {
+              detail = text;
+            }
           }
+          throw new Error(detail);
         }
-        throw new Error(detail);
-      }
 
-      const payload = await response.json();
-      render(payload.results || []);
-    } catch (error) {
-      if (error.name === 'AbortError') {
+        const payload = await response.json();
+        render(payload.results || []);
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          return;
+        }
+        console.error('[' + type + ' search] Search failed.', error);
+        setStatus('Search failed: ' + error.message);
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+      }
+    });
+
+    results.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-select-type]');
+      if (!button || button.dataset.selectType !== type) {
         return;
       }
-      console.error('[ArtistSearch] Search failed.', error);
-      setStatus('Search failed: ' + error.message);
-    } finally {
-      if (activeController === controller) {
-        activeController = null;
+
+      const payload = config.buildSelectPayload(button.dataset);
+      if (!payload) {
+        return;
       }
+
+      setStatus('Adding…');
+      try {
+        const response = await fetch(config.selectEndpoint, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+          const message = data.error || data.message || ('HTTP ' + response.status);
+          throw new Error(message);
+        }
+        if (data.redirect) {
+          window.location.href = data.redirect;
+          return;
+        }
+        setStatus(data.message || config.addSuccess || 'Item added successfully.');
+        results.innerHTML = '';
+        fields.forEach((field) => { if (config.clearOnSuccess) { field.value = ''; } });
+      } catch (error) {
+        console.error('[' + type + ' search] Failed to add entry.', error);
+        setStatus('Failed to add entry: ' + error.message);
+      }
+    });
+  }
+
+  const searchConfigs = {
+    artist: {
+      formId: 'artist-search-form',
+      resultsId: 'artist-search-results',
+      statusId: 'artist-search-status',
+      fieldIds: ['artist-search-input'],
+      endpoint: '/api/artist-search',
+      selectEndpoint: '/api/artist-select',
+      inputHint: 'Enter an artist to search for.',
+      emptyMessage: 'No artists found.',
+      successPrompt: 'Select an artist to add and download.',
+      addSuccess: 'Artist queued for download.',
+      buildQuery(values) {
+        return values['artist-search-input'];
+      },
+      buildSelectPayload(dataset) {
+        const id = dataset.artistId || dataset.id || '';
+        if (!id) {
+          return null;
+        }
+        return {
+          id,
+          name: dataset.artistName || dataset.name || ''
+        };
+      },
+      renderItem(item, escapeHtml) {
+        return (
+          '<li class="search-result">' +
+          '<div class="search-meta">' +
+          '<div class="search-primary">' + escapeHtml(item.name || '') + '</div>' +
+          '<div class="search-secondary">ID: ' + escapeHtml(item.id || '') + '</div>' +
+          '</div>' +
+          '<button type="button" class="button success" data-select-type="artist" data-artist-id="' + escapeHtml(item.id || '') + '" data-artist-name="' + escapeHtml(item.name || '') + '">Add</button>' +
+          '</li>'
+        );
+      }
+    },
+    album: {
+      formId: 'album-search-form',
+      resultsId: 'album-search-results',
+      statusId: 'album-search-status',
+      fieldIds: ['album-search-title', 'album-search-artist'],
+      endpoint: '/api/album-search',
+      selectEndpoint: '/api/album-select',
+      inputHint: 'Enter at least an album or artist name.',
+      emptyMessage: 'No albums found.',
+      successPrompt: 'Select an album to queue for download.',
+      addSuccess: 'Album queued for luckysearch.',
+      clearOnSuccess: true,
+      buildQuery(values) {
+        return joinNonEmpty([values['album-search-title'] || '', values['album-search-artist'] || '']);
+      },
+      buildSelectPayload(dataset) {
+        const value = dataset.value || '';
+        if (!value) {
+          return null;
+        }
+        return {
+          id: dataset.id || '',
+          title: dataset.title || '',
+          artist: dataset.artist || '',
+          value,
+          lookup: dataset.lookup || ''
+        };
+      },
+      renderItem(item, escapeHtml) {
+        const title = escapeHtml(item.title || '');
+        const artist = escapeHtml(item.artist || '');
+        const year = escapeHtml(item.year || '');
+        const lookup = escapeHtml(item.lookup || '');
+        const value = escapeHtml(item.value || '');
+        return (
+          '<li class="search-result">' +
+          '<div class="search-meta">' +
+          '<div class="search-primary">' + title + '</div>' +
+          '<div class="search-secondary">' + (artist ? 'Artist: ' + artist : 'Artist unknown') + (year ? ' · ' + year : '') + '</div>' +
+          '</div>' +
+          '<button type="button" class="button success" data-select-type="album" data-id="' + escapeHtml(item.id || '') + '" data-title="' + title + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '</li>'
+        );
+      }
+    },
+    track: {
+      formId: 'track-search-form',
+      resultsId: 'track-search-results',
+      statusId: 'track-search-status',
+      fieldIds: ['track-search-title', 'track-search-album', 'track-search-artist'],
+      endpoint: '/api/track-search',
+      selectEndpoint: '/api/track-select',
+      inputHint: 'Enter at least a track name.',
+      emptyMessage: 'No tracks found.',
+      successPrompt: 'Select a track to queue for download.',
+      addSuccess: 'Track queued for luckysearch.',
+      clearOnSuccess: true,
+      buildQuery(values) {
+        return joinNonEmpty([
+          values['track-search-title'] || '',
+          values['track-search-album'] || '',
+          values['track-search-artist'] || ''
+        ]);
+      },
+      buildSelectPayload(dataset) {
+        const value = dataset.value || '';
+        if (!value) {
+          return null;
+        }
+        return {
+          id: dataset.id || '',
+          title: dataset.title || '',
+          album: dataset.album || '',
+          artist: dataset.artist || '',
+          value,
+          lookup: dataset.lookup || ''
+        };
+      },
+      renderItem(item, escapeHtml) {
+        const title = escapeHtml(item.title || '');
+        const album = escapeHtml(item.album || '');
+        const artist = escapeHtml(item.artist || '');
+        const value = escapeHtml(item.value || '');
+        const lookup = escapeHtml(item.lookup || '');
+        return (
+          '<li class="search-result">' +
+          '<div class="search-meta">' +
+          '<div class="search-primary">' + title + '</div>' +
+          '<div class="search-secondary">' +
+          (artist ? 'Artist: ' + artist : 'Artist unknown') +
+          (album ? ' · Album: ' + album : '') +
+          '</div>' +
+          '</div>' +
+          '<button type="button" class="button success" data-select-type="track" data-id="' + escapeHtml(item.id || '') + '" data-title="' + title + '" data-album="' + album + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '</li>'
+        );
+      }
+    }
+  };
+
+  Object.entries(searchConfigs).forEach(([type, config]) => {
+    attachSearchController(type, config);
+  });
+
+  const selector = document.getElementById('list-selector');
+  const sections = document.querySelectorAll('.list-section');
+  function showSection(target) {
+    sections.forEach((section) => {
+      section.classList.toggle('active', section.dataset.list === target);
+    });
+    if (selector && selector.value !== target) {
+      selector.value = target;
     }
   }
 
-  form.addEventListener('submit', runSearch);
-
-  results.addEventListener('click', async (event) => {
-    const button = event.target.closest('button[data-artist-id]');
-    if (!button) {
-      return;
-    }
-
-    const artistId = button.getAttribute('data-artist-id') || '';
-    const artistName = button.getAttribute('data-artist-name') || '';
-    if (!artistId) {
-      return;
-    }
-
-    setStatus('Adding artist…');
-    try {
-      const response = await fetch('/api/artist-select', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: artistId, name: artistName})
-      });
-      const payload = await response.json();
-      if (!response.ok || payload.success === false) {
-        const message = payload.error || payload.message || ('HTTP ' + response.status);
-        throw new Error(message);
-      }
-      if (payload.redirect) {
-        window.location.href = payload.redirect;
-        return;
-      }
-      setStatus(payload.message || 'Artist queued for download.');
-      results.innerHTML = '';
-    } catch (error) {
-      console.error('[ArtistSearch] Failed to add artist.', error);
-      setStatus('Failed to add artist: ' + error.message);
-    }
-  });
+  if (selector && sections.length) {
+    selector.addEventListener('change', () => {
+      showSection(selector.value);
+    });
+    const active = Array.from(sections).find((section) => section.classList.contains('active'));
+    showSection(active ? active.dataset.list : selector.value || sections[0].dataset.list);
+  }
 })();
 </script>
 """.strip()
@@ -411,15 +632,20 @@ def _get_qobuz_client():
         return session
 
 
-def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
+def _qobuz_search(kind: str, query: str, limit: int = 10) -> Dict[str, Any]:
     if limit <= 0:
         limit = 10
 
-    logging.info("Starting Qobuz artist search for query %r with limit %s.", query, limit)
+    logging.info(
+        "Starting Qobuz %s search for query %r with limit %s.",
+        kind,
+        query,
+        limit,
+    )
     session = _get_qobuz_client()
 
     try:
-        data = session.search("artist", query, limit=limit)
+        return session.search(kind, query, limit=limit)
     except RuntimeError as exc:
         message = str(exc)
         try:
@@ -428,16 +654,32 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             raise RuntimeError(message) from exc
         else:
             if isinstance(payload, dict):
-                detail = payload.get("message") or payload.get("error") or payload.get("code")
+                detail = (
+                    payload.get("message")
+                    or payload.get("error")
+                    or payload.get("code")
+                )
                 if detail:
                     raise RuntimeError(str(detail)) from exc
             raise RuntimeError(message) from exc
     except requests.exceptions.Timeout as exc:
-        logging.warning("Qobuz artist search timed out for query %r.", query)
+        logging.warning(
+            "Qobuz %s search timed out for query %r.",
+            kind,
+            query,
+        )
         raise RuntimeError("Qobuz search timed out.") from exc
     except Exception as exc:  # pragma: no cover - network failure
-        logging.exception("Unexpected error during Qobuz artist search for query %r.", query)
+        logging.exception(
+            "Unexpected error during Qobuz %s search for query %r.",
+            kind,
+            query,
+        )
         raise RuntimeError("Unable to reach Qobuz search endpoint.") from exc
+
+
+def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
+    data = _qobuz_search("artist", query, limit=limit)
 
     artists = data.get("artists", {}) or {}
     items = artists.get("items") or []
@@ -465,7 +707,141 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             }
         )
 
-    logging.info("Qobuz artist search for query %r returned %s result(s).", query, len(results))
+    logging.info(
+        "Qobuz artist search for query %r returned %s result(s).",
+        query,
+        len(results),
+    )
+    return results
+
+
+def _pick_first_str(*candidates: Any) -> str:
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text:
+                return text
+        elif isinstance(candidate, dict):
+            potential = (
+                candidate.get("name")
+                or candidate.get("title")
+                or candidate.get("display_name")
+            )
+            if isinstance(potential, str):
+                text = potential.strip()
+                if text:
+                    return text
+        elif isinstance(candidate, list):
+            for item in candidate:
+                text = _pick_first_str(item)
+                if text:
+                    return text
+    return ""
+
+
+def _qobuz_album_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
+    data = _qobuz_search("album", query, limit=limit)
+
+    albums = data.get("albums", {}) or {}
+    items = albums.get("items") or []
+    results: List[Dict[str, str]] = []
+    for item in items:
+        album_id = item.get("id")
+        title_raw = item.get("title") or item.get("name")
+        if not album_id or not title_raw:
+            continue
+
+        title = str(title_raw).strip()
+        artist_name = _pick_first_str(
+            item.get("artist"),
+            item.get("artists"),
+            item.get("performer"),
+        )
+
+        release_date = _pick_first_str(
+            item.get("release_date_original"),
+            item.get("release_date"),
+        )
+        year = ""
+        if release_date:
+            candidate = release_date[:4]
+            if candidate.isdigit():
+                year = candidate
+
+        artist_label = artist_name
+        value_parts = [part for part in [artist_name, title] if part]
+        value = " - ".join(value_parts) if value_parts else title
+        lookup = " ".join(part for part in [title, artist_name] if part) or title
+
+        results.append(
+            {
+                "id": str(album_id),
+                "title": title,
+                "artist": artist_label,
+                "year": year,
+                "value": value,
+                "lookup": lookup,
+            }
+        )
+
+    logging.info(
+        "Qobuz album search for query %r returned %s result(s).",
+        query,
+        len(results),
+    )
+    return results
+
+
+def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
+    data = _qobuz_search("track", query, limit=limit)
+
+    tracks = data.get("tracks", {}) or {}
+    items = tracks.get("items") or []
+    results: List[Dict[str, str]] = []
+    for item in items:
+        track_id = item.get("id")
+        title_raw = item.get("title") or item.get("name")
+        if not track_id or not title_raw:
+            continue
+
+        title = str(title_raw).strip()
+        album_info = item.get("album") or {}
+        album_title = _pick_first_str(
+            album_info.get("title") if isinstance(album_info, dict) else album_info,
+            item.get("album_title"),
+        )
+        artist_name = _pick_first_str(
+            item.get("performer"),
+            item.get("artist"),
+            item.get("contributors"),
+        )
+
+        base_value_parts = [part for part in [artist_name, title] if part]
+        base_value = " - ".join(base_value_parts) if base_value_parts else title
+        value = base_value
+        if album_title:
+            value = f"{base_value} ({album_title})" if base_value else album_title
+
+        lookup = " ".join(
+            part for part in [title, artist_name, album_title] if part
+        ) or title
+
+        results.append(
+            {
+                "id": str(track_id),
+                "title": title,
+                "album": album_title,
+                "artist": artist_name,
+                "value": value,
+                "lookup": lookup,
+            }
+        )
+
+    logging.info(
+        "Qobuz track search for query %r returned %s result(s).",
+        query,
+        len(results),
+    )
     return results
 
 
@@ -736,13 +1112,23 @@ def normalize_kind(raw: str | None) -> str | None:
     return key if key in LIST_LABELS else None
 
 
-def redirect_location(message: str | None = None, is_error: bool = False) -> str:
-    if not message:
-        return "/"
-    payload = {"message": message}
+def redirect_location(
+    message: str | None = None,
+    is_error: bool = False,
+    *,
+    selected: str | None = None,
+) -> str:
+    params: Dict[str, str] = {}
+    if message:
+        params["message"] = message
     if is_error:
-        payload["error"] = "1"
-    return "/?" + urlencode(payload)
+        params["error"] = "1"
+    selected_kind = normalize_kind(selected) if selected else None
+    if selected_kind:
+        params["list"] = selected_kind
+    if not params:
+        return "/"
+    return "/?" + urlencode(params)
 
 
 class ListRequestHandler(BaseHTTPRequestHandler):
@@ -754,6 +1140,14 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             self.handle_artist_search(parsed)
             return
 
+        if parsed.path == "/api/album-search":
+            self.handle_album_search(parsed)
+            return
+
+        if parsed.path == "/api/track-search":
+            self.handle_track_search(parsed)
+            return
+
         if parsed.path not in {"", "/"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
             return
@@ -761,8 +1155,13 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         message = query.get("message", [None])[0]
         is_error = query.get("error", ["0"])[0] == "1"
+        selected = normalize_kind(query.get("list", [None])[0]) or "artist"
 
-        body = self.render_index(message=message, is_error=is_error)
+        body = self.render_index(
+            message=message,
+            is_error=is_error,
+            selected_kind=selected,
+        )
         body_bytes = body.encode("utf-8")
 
         self.send_response(HTTPStatus.OK)
@@ -777,6 +1176,14 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         payload = self.rfile.read(content_length).decode("utf-8") if content_length else ""
         if parsed.path == "/api/artist-select":
             self.handle_artist_select(payload, self.headers.get("Content-Type", ""))
+            return
+
+        if parsed.path == "/api/album-select":
+            self.handle_album_select(payload, self.headers.get("Content-Type", ""))
+            return
+
+        if parsed.path == "/api/track-select":
+            self.handle_track_select(payload, self.headers.get("Content-Type", ""))
             return
 
         data = {k: v[0] for k, v in parse_qs(payload).items() if v}
@@ -823,6 +1230,94 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
         logging.info(
             "Artist search request for query %r returning %s result(s) to client.",
+            query,
+            len(results),
+        )
+        self.send_json({"results": results})
+
+    def handle_album_search(self, parsed) -> None:
+        params = parse_qs(parsed.query)
+        query = (params.get("q") or [""])[0].strip()
+        limit_raw = (params.get("limit") or ["10"])[0]
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = 10
+
+        logging.info(
+            "Received album search request from %s with query=%r limit=%s.",
+            self.address_string(),
+            query,
+            limit,
+        )
+        if not query:
+            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            results = _qobuz_album_search(query, limit=limit)
+        except RuntimeError as exc:
+            message = str(exc)
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if "app_id" in message
+                else HTTPStatus.BAD_GATEWAY
+            )
+            logging.warning(
+                "Album search request for query %r failed with status %s: %s",
+                query,
+                status,
+                message,
+            )
+            self.send_json({"error": message}, status=status)
+            return
+
+        logging.info(
+            "Album search request for query %r returning %s result(s) to client.",
+            query,
+            len(results),
+        )
+        self.send_json({"results": results})
+
+    def handle_track_search(self, parsed) -> None:
+        params = parse_qs(parsed.query)
+        query = (params.get("q") or [""])[0].strip()
+        limit_raw = (params.get("limit") or ["10"])[0]
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            limit = 10
+
+        logging.info(
+            "Received track search request from %s with query=%r limit=%s.",
+            self.address_string(),
+            query,
+            limit,
+        )
+        if not query:
+            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            results = _qobuz_track_search(query, limit=limit)
+        except RuntimeError as exc:
+            message = str(exc)
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if "app_id" in message
+                else HTTPStatus.BAD_GATEWAY
+            )
+            logging.warning(
+                "Track search request for query %r failed with status %s: %s",
+                query,
+                status,
+                message,
+            )
+            self.send_json({"error": message}, status=status)
+            return
+
+        logging.info(
+            "Track search request for query %r returning %s result(s) to client.",
             query,
             len(results),
         )
@@ -896,7 +1391,203 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 f"Added artist ID {artist_id} and started download."
             )
 
-        redirect = redirect_location(message=combined_message, is_error=False)
+        redirect = redirect_location(
+            message=combined_message,
+            is_error=False,
+            selected="artist",
+        )
+        self.send_json(
+            {
+                "success": True,
+                "message": combined_message,
+                "redirect": redirect,
+            }
+        )
+
+    def handle_album_select(self, raw_body: str, content_type: str | None) -> None:
+        content_type = (content_type or "").split(";", 1)[0].strip().lower()
+        data: Dict[str, str] = {}
+
+        if content_type == "application/json":
+            try:
+                payload = json.loads(raw_body or "{}")
+            except json.JSONDecodeError:
+                self.send_json(
+                    {"error": "Invalid JSON body."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if value is None:
+                        data[str(key)] = ""
+                    elif isinstance(value, (str, int, float)):
+                        data[str(key)] = str(value)
+                    else:
+                        data[str(key)] = ""
+            else:
+                self.send_json(
+                    {"error": "Invalid request payload."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+        else:
+            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
+
+        album_id = data.get("id", "").strip()
+        album_title = data.get("title", "").strip()
+        album_artist = data.get("artist", "").strip()
+        stored_value = data.get("value", "").strip()
+        lookup = data.get("lookup", "").strip()
+
+        logging.info(
+            "Received album selection from %s with id=%r title=%r artist=%r.",
+            self.address_string(),
+            album_id,
+            album_title,
+            album_artist,
+        )
+
+        if not stored_value:
+            parts = [part for part in [album_artist, album_title] if part]
+            if parts:
+                stored_value = " - ".join(parts)
+            elif album_id:
+                stored_value = album_id
+
+        if not stored_value:
+            self.send_json(
+                {"error": "Missing album details."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        success, add_message = add_entry("album", stored_value)
+
+        if not success:
+            self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
+            return
+
+        logging.info("Album %s added to list: %s", stored_value, add_message)
+        _trigger_luckysearch("album", (lookup or stored_value).strip())
+
+        label = album_title or stored_value
+        if album_artist and album_title:
+            combined_message = (
+                f"Added album '{album_title}' by {album_artist} and queued luckysearch."
+            )
+        elif album_artist:
+            combined_message = (
+                f"Added album by {album_artist} and queued luckysearch."
+            )
+        else:
+            combined_message = f"Added album '{label}' and queued luckysearch."
+
+        redirect = redirect_location(
+            message=combined_message,
+            is_error=False,
+            selected="album",
+        )
+        self.send_json(
+            {
+                "success": True,
+                "message": combined_message,
+                "redirect": redirect,
+            }
+        )
+
+    def handle_track_select(self, raw_body: str, content_type: str | None) -> None:
+        content_type = (content_type or "").split(";", 1)[0].strip().lower()
+        data: Dict[str, str] = {}
+
+        if content_type == "application/json":
+            try:
+                payload = json.loads(raw_body or "{}")
+            except json.JSONDecodeError:
+                self.send_json(
+                    {"error": "Invalid JSON body."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if value is None:
+                        data[str(key)] = ""
+                    elif isinstance(value, (str, int, float)):
+                        data[str(key)] = str(value)
+                    else:
+                        data[str(key)] = ""
+            else:
+                self.send_json(
+                    {"error": "Invalid request payload."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+        else:
+            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
+
+        track_id = data.get("id", "").strip()
+        track_title = data.get("title", "").strip()
+        album_title = data.get("album", "").strip()
+        artist_name = data.get("artist", "").strip()
+        stored_value = data.get("value", "").strip()
+        lookup = data.get("lookup", "").strip()
+
+        logging.info(
+            "Received track selection from %s with id=%r title=%r album=%r artist=%r.",
+            self.address_string(),
+            track_id,
+            track_title,
+            album_title,
+            artist_name,
+        )
+
+        if not stored_value:
+            parts = [part for part in [artist_name, track_title] if part]
+            if parts:
+                base_value = " - ".join(parts)
+            else:
+                base_value = ""
+            if base_value and album_title:
+                stored_value = f"{base_value} ({album_title})"
+            elif base_value:
+                stored_value = base_value
+            elif album_title:
+                stored_value = album_title
+            elif track_id:
+                stored_value = track_id
+
+        if not stored_value:
+            self.send_json(
+                {"error": "Missing track details."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        success, add_message = add_entry("track", stored_value)
+
+        if not success:
+            self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
+            return
+
+        logging.info("Track %s added to list: %s", stored_value, add_message)
+        _trigger_luckysearch("track", (lookup or stored_value).strip())
+
+        label = track_title or stored_value
+        pieces = [f"Added track '{label}'"]
+        if artist_name:
+            pieces.append(f"by {artist_name}")
+        if album_title:
+            pieces.append(f"from album '{album_title}'")
+        combined_message = " ".join(pieces) + " and queued luckysearch."
+
+        redirect = redirect_location(
+            message=combined_message,
+            is_error=False,
+            selected="track",
+        )
         self.send_json(
             {
                 "success": True,
@@ -910,9 +1601,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         value = data.get("value", "").strip()
         label = data.get("label", "").strip()
         lookup = data.get("lookup", "").strip()
+        selected = normalize_kind(data.get("selected"))
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
             return
+        if not selected:
+            selected = kind
         if kind == "artist":
             success, message = add_entry(
                 kind,
@@ -928,129 +1622,248 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 _trigger_artist_download(value)
             else:
                 _trigger_luckysearch(kind, (lookup or label or value).strip())
-        self.redirect_home(message, is_error=not success)
+        self.redirect_home(message, is_error=not success, selected=selected)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
             return
+        selected = normalize_kind(data.get("selected")) or kind
         try:
             index = int(data.get("index", ""))
         except ValueError:
             self.redirect_home("Invalid entry index.", is_error=True)
             return
         success, message = remove_entry(kind, index)
-        self.redirect_home(message, is_error=not success)
+        self.redirect_home(message, is_error=not success, selected=selected)
 
-    def redirect_home(self, message: str | None, is_error: bool = False) -> None:
-        location = redirect_location(message=message, is_error=is_error)
+    def redirect_home(
+        self,
+        message: str | None,
+        is_error: bool = False,
+        *,
+        selected: str | None = None,
+    ) -> None:
+        location = redirect_location(
+            message=message,
+            is_error=is_error,
+            selected=selected,
+        )
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         self.end_headers()
 
-    def render_index(self, message: str | None, is_error: bool) -> str:
-        sections = []
+
+
+    def render_index(
+        self,
+        message: str | None,
+        is_error: bool,
+        *,
+        selected_kind: str,
+    ) -> str:
+        normalized_selected = normalize_kind(selected_kind) or "artist"
+
+        sections: List[str] = []
         for kind, label in LIST_LABELS.items():
             entries = read_entries(kind)
-            row_items = []
+            row_items: List[str] = []
             for idx, entry in enumerate(entries):
-                if kind == "artist" and isinstance(entry, dict):
-                    artist_id = entry.get("id", "")
-                    artist_name = entry.get("name", "") or artist_id
+                remove_form = ''.join(
+                    [
+                        '<form method="post" action="/delete" class="inline-form">',
+                        f'<input type="hidden" name="list" value="{kind}">',
+                        f'<input type="hidden" name="selected" value="{kind}">',
+                        f'<input type="hidden" name="index" value="{idx}">',
+                        '<button type="submit" class="button danger">Remove</button>',
+                        '</form>',
+                    ]
+                )
+
+                if kind == 'artist' and isinstance(entry, dict):
+                    artist_id = (entry.get('id') or '').strip()
+                    artist_name = (entry.get('name') or '').strip() or artist_id
+                    primary = html.escape(artist_name or artist_id)
+                    secondary_html = (
+                        f'<span class="entry-secondary">ID: {html.escape(artist_id)}</span>'
+                        if artist_id
+                        else ''
+                    )
                     row_items.append(
-                        "<li>"
-                        "<div class=\"entry-text\">"
-                        f"<div class=\"entry-primary\">{html.escape(artist_name)}</div>"
-                        f"<div class=\"entry-secondary\">ID: {html.escape(artist_id)}</div>"
-                        "</div>"
-                        f"<form method=\"post\" action=\"/delete\" class=\"inline\">"
-                        f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
-                        f"<input type=\"hidden\" name=\"index\" value=\"{idx}\">"
-                        f"<button type=\"submit\" class=\"delete\">Remove</button>"
-                        "</form></li>"
+                        ''.join(
+                            [
+                                '<li class="entry">',
+                                '<div class="entry-text">',
+                                f'<span class="entry-primary">{primary}</span>',
+                                secondary_html,
+                                '</div>',
+                                remove_form,
+                                '</li>',
+                            ]
+                        )
                     )
                 else:
+                    entry_text = html.escape(str(entry))
                     row_items.append(
-                        f"<li><span>{html.escape(str(entry))}</span> "
-                        f"<form method=\"post\" action=\"/delete\" class=\"inline\">"
-                        f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">"
-                        f"<input type=\"hidden\" name=\"index\" value=\"{idx}\">"
-                        f"<button type=\"submit\" class=\"delete\">Remove</button>"
-                        f"</form></li>"
+                        ''.join(
+                            [
+                                '<li class="entry">',
+                                '<div class="entry-text">',
+                                f'<span class="entry-primary">{entry_text}</span>',
+                                '</div>',
+                                remove_form,
+                                '</li>',
+                            ]
+                        )
                     )
-            rows_html = "\n".join(row_items) or "<li class=\"empty\">No entries yet.</li>"
-            placeholder = f"Add new {kind}"
-            if kind == "artist":
-                placeholder = "Add artist ID"
 
+            rows_html = (
+                '\n'.join(row_items)
+                if row_items
+                else '<li class=\"empty\">No entries yet.</li>'
+            )
+
+            placeholder = f'Add new {kind}'
+            label_text = LIST_LABELS[kind][:-1]
+            if kind == 'artist':
+                label_text = 'Artist ID'
+                placeholder = 'Add artist ID'
+            elif kind == 'album':
+                placeholder = 'Add new album'
+            elif kind == 'track':
+                placeholder = 'Add new track'
+
+            add_form = ''.join(
+                [
+                    '<form method="post" action="/add" class="add-form">',
+                    f'<input type="hidden" name="list" value="{kind}">',
+                    f'<input type="hidden" name="selected" value="{kind}">',
+                    '<div class="input-group">',
+                    f'<span class="field-label">{html.escape(label_text)}</span>',
+                    f'<input type="text" name="value" placeholder="{html.escape(placeholder)}" required>',
+                    '</div>',
+                    '<button type="submit" class="button primary">Add</button>',
+                    '</form>',
+                ]
+            )
+
+            active_class = ' active' if kind == normalized_selected else ''
             section_parts = [
-                "<section>",
-                f"<h2>{html.escape(label)}</h2>",
-                f"<ul>\n{rows_html}\n</ul>",
-                f"<form method=\"post\" action=\"/add\" class=\"add-form\">",
-                f"<input type=\"hidden\" name=\"list\" value=\"{kind}\">",
-                f"<input type=\"text\" name=\"value\" placeholder=\"{html.escape(placeholder)}\" required>",
-                f"<button type=\"submit\">Add</button>",
-                "</form>",
+                f'<section class="list-section{active_class}" data-list="{kind}">',
+                '<div class="section-header">',
+                f'<h2>{html.escape(label)}</h2>',
+                '</div>',
+                f'<ul class="entry-list">{rows_html}</ul>',
+                add_form,
             ]
-            if kind == "artist":
+
+            if kind == 'artist':
                 section_parts.append(ARTIST_SEARCH_SECTION)
-            section_parts.append("</section>")
-            sections.append("".join(section_parts))
+            elif kind == 'album':
+                section_parts.append(ALBUM_SEARCH_SECTION)
+            elif kind == 'track':
+                section_parts.append(TRACK_SEARCH_SECTION)
+
+            section_parts.append('</section>')
+            sections.append(''.join(section_parts))
 
         banners: List[Tuple[str, bool]] = []
         if message:
             banners.append((message, is_error))
         banners.extend(_consume_async_messages())
 
-        message_html = "".join(
-            f"<div class=\"banner {'error' if banner_is_error else 'info'}\">{html.escape(banner_message)}</div>"
+        message_html = ''.join(
+            f'<div class="banner {"error" if banner_is_error else "info"}">{html.escape(banner_message)}</div>'
             for banner_message, banner_is_error in banners
         )
 
+        options_html = ''.join(
+            f'<option value="{kind}"{" selected" if kind == normalized_selected else ""}>{html.escape(label)}</option>'
+            for kind, label in LIST_LABELS.items()
+        )
+        controls_html = ''.join(
+            [
+                '<div class="controls">',
+                '<label class="list-switcher" for="list-selector">',
+                '<span class="list-switcher-label">Show list</span>',
+                f'<select id="list-selector" name="list-selector">{options_html}</select>',
+                '</label>',
+                '</div>',
+            ]
+        )
+
+        styles = ''.join(
+            [
+                ':root{color-scheme:dark;}',
+                '*{box-sizing:border-box;}',
+                "body{font-family:'Inter',Arial,sans-serif;background:#0b1320;color:#f4f6ff;margin:0;min-height:100vh;}",
+                '.page{max-width:960px;margin:0 auto;padding:1.5rem clamp(1rem,4vw,2.5rem);}',
+                'h1{margin:0 0 1.25rem;font-size:clamp(1.75rem,2.5vw+1rem,2.6rem);}',
+                '.controls{display:flex;flex-wrap:wrap;align-items:center;gap:0.75rem;margin-bottom:1.5rem;}',
+                '.list-switcher{display:flex;align-items:center;gap:0.6rem;background:#161f2f;padding:0.75rem 1rem;border-radius:10px;}',
+                '.list-switcher-label{font-weight:600;font-size:0.95rem;color:#a7b4d6;}',
+                '.list-switcher select{background:#0f1724;border:1px solid #2c3a55;color:#f4f6ff;padding:0.45rem 0.9rem;border-radius:6px;font-size:1rem;min-width:10rem;}',
+                '.banner{margin-bottom:1rem;padding:0.9rem 1rem;border-radius:8px;border:1px solid transparent;}',
+                '.banner.info{background:rgba(47,137,252,0.15);border-color:rgba(47,137,252,0.45);color:#d8e5ff;}',
+                '.banner.error{background:rgba(217,83,79,0.18);border-color:rgba(217,83,79,0.55);color:#ffd7d5;}',
+                '.list-section{display:none;background:#161f2f;border-radius:12px;padding:1.25rem clamp(1rem,3vw,1.75rem);margin-bottom:1.75rem;box-shadow:0 16px 28px rgba(5,10,25,0.45);}',
+                '.list-section.active{display:block;}',
+                '.section-header{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;}',
+                '.section-header h2{margin:0;font-size:clamp(1.35rem,1.5vw+1rem,1.8rem);}',
+                '.entry-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
+                '.entry{display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;padding:0.9rem 1rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;}',
+                '.entry-text{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
+                '.entry-primary{font-weight:600;word-break:break-word;}',
+                '.entry-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
+                '.inline-form{margin:0;}',
+                '.button{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:6px;padding:0.45rem 0.95rem;font-weight:600;cursor:pointer;transition:transform 0.15s ease,filter 0.15s ease;color:#fff;}',
+                '.button:hover{filter:brightness(1.08);transform:translateY(-1px);}',
+                '.button:active{transform:translateY(0);}',
+                '.button.primary{background:#2f89fc;}',
+                '.button.success{background:#1bbf72;color:#04120a;}',
+                '.button.danger{background:#d9534f;}',
+                '.add-form{margin-top:1.25rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;}',
+                '.input-group{display:flex;flex-direction:column;gap:0.35rem;width:100%;flex:1;}',
+                '.field-label{font-size:0.85rem;color:#8d99bd;text-transform:uppercase;letter-spacing:0.05em;}',
+                '.add-form input[type=text],.search-form input[type=search],.search-form input[type=text]{background:#0b1320;border:1px solid #2c3a55;border-radius:6px;padding:0.55rem 0.75rem;color:#f4f6ff;font-size:1rem;width:100%;}',
+                '.add-form input[type=text]:focus,.search-form input[type=search]:focus,.search-form input[type=text]:focus{outline:2px solid #2f89fc;outline-offset:0;border-color:#2f89fc;}',
+                '.search-block{margin-top:1.5rem;display:flex;flex-direction:column;gap:0.9rem;}',
+                '.search-form{display:flex;flex-direction:column;gap:0.9rem;}',
+                '.search-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));}',
+                '.search-actions{display:flex;justify-content:flex-end;}',
+                '.search-status{font-size:0.9rem;color:#8d99bd;display:block;}',
+                '.search-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
+                '.search-result{display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:0.85rem 1rem;}',
+                '.search-meta{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
+                '.search-primary{font-weight:600;word-break:break-word;}',
+                '.search-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
+                '.empty{color:#8d99bd;font-style:italic;padding:0.5rem 0;}',
+                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.inline-form{width:100%;}.inline-form .button{width:100%;}.add-form{flex-direction:column;align-items:stretch;}.add-form .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
+            ]
+        )
+
+        sections_html = ''.join(sections)
+
         return (
-            "<!DOCTYPE html>"
-            "<html lang=\"en\">"
-            "<head>"
-            "<meta charset=\"utf-8\">"
-            "<title>OrpheusDL Lists</title>"
-            "<style>"
-            "body{font-family:Arial,Helvetica,sans-serif;background:#101820;color:#f2f2f2;margin:0;padding:2rem;}"
-            "h1{margin-top:0;}section{background:#1f2a3a;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem;}"
-            "h2{margin-top:0;}ul{list-style:none;padding:0;}li{display:flex;align-items:center;justify-content:space-between;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.08);}"
-            "li:last-child{border-bottom:none;}li span{flex:1;}form.inline{display:inline;}"
-            "li .entry-text{flex:1;display:flex;flex-direction:column;gap:0.25rem;}"
-            ".entry-secondary{font-size:0.85rem;color:#a3adcb;}"
-            "button{background:#2f89fc;color:#fff;border:none;padding:0.4rem 0.8rem;border-radius:4px;cursor:pointer;}"
-            "button.delete{background:#d9534f;}button:hover{opacity:0.85;}"
-            ".add-form{margin-top:1rem;display:flex;gap:0.5rem;}"
-            ".add-form input[type=text]{flex:1;padding:0.45rem;border-radius:4px;border:1px solid #3c4b63;background:#0d141f;color:#f2f2f2;}"
-            ".banner{margin-bottom:1rem;padding:0.75rem 1rem;border-radius:6px;}"
-            ".banner.info{background:#2f89fc33;border:1px solid #2f89fc;}"
-            ".banner.error{background:#d9534f33;border:1px solid #d9534f;}"
-            ".empty{color:#a3adcb;font-style:italic;}"
-            ".artist-search{margin-top:1.5rem;}"
-            ".artist-search h3{margin:0 0 0.75rem;font-size:1.1rem;}"
-            ".search-controls{display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;}"
-            ".search-controls input[type=search]{flex:1;padding:0.45rem;border-radius:4px;border:1px solid #3c4b63;background:#0d141f;color:#f2f2f2;}"
-            ".search-controls button{background:#1bbf72;}"
-            ".search-status{color:#a3adcb;font-style:italic;margin-bottom:0.75rem;}"
-            ".search-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.5rem;}"
-            ".search-result{display:flex;align-items:center;justify-content:space-between;background:#152030;border-radius:6px;padding:0.75rem;gap:0.75rem;border:none;}"
-            ".search-meta{display:flex;flex-direction:column;gap:0.35rem;}"
-            ".search-name{font-weight:600;}"
-            ".search-id{font-size:0.8rem;color:#a3adcb;}"
-            ".search-add{background:#1bbf72;}"
-            "</style>"
-            "</head>"
-            "<body>"
-            "<h1>OrpheusDL Lists</h1>"
-            f"{message_html}"
-            f"{''.join(sections)}"
-            f"{ARTIST_SEARCH_SCRIPT}"
-            "</body>"
-            "</html>"
+            '<!DOCTYPE html>'
+            '<html lang="en">'
+            '<head>'
+            '<meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<title>OrpheusDL Lists</title>'
+            f'<style>{styles}</style>'
+            '</head>'
+            '<body>'
+            '<div class="page">'
+            '<h1>OrpheusDL Lists</h1>'
+            f'{message_html}'
+            f'{controls_html}'
+            f'{sections_html}'
+            '</div>'
+            f'{SEARCH_SCRIPT}'
+            '</body>'
+            '</html>'
         )
 
     def send_json(self, payload: Dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
