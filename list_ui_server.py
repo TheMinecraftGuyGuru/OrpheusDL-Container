@@ -15,11 +15,12 @@ import subprocess
 import sys
 import threading
 import unicodedata
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse, quote, unquote
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from urllib.parse import ParseResult, parse_qs, urlencode, urlparse, quote, unquote
 
 import requests
 from notifications import send_discord_notification as _send_discord_notification
@@ -574,6 +575,15 @@ def _get_database_connection() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def _database_connection() -> Iterator[sqlite3.Connection]:
+    conn = _get_database_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _create_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -630,13 +640,10 @@ def _ensure_database_ready_locked() -> None:
 
 def _read_artist_entries_locked() -> List[Dict[str, str]]:
     _ensure_database_ready_locked()
-    conn = _get_database_connection()
-    try:
+    with _database_connection() as conn:
         rows = conn.execute(
             "SELECT id, name, last_checked_at FROM artists ORDER BY created_at, rowid"
         ).fetchall()
-    finally:
-        conn.close()
 
     entries: List[Dict[str, str]] = []
     for row in rows:
@@ -660,8 +667,7 @@ def _read_artist_entries_locked() -> List[Dict[str, str]]:
 
 def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
     _ensure_database_ready_locked()
-    conn = _get_database_connection()
-    try:
+    with _database_connection() as conn:
         existing_rows = conn.execute(
             "SELECT id, last_checked_at FROM artists"
         ).fetchall()
@@ -686,8 +692,6 @@ def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
                 (artist_id, artist_name, last_checked),
             )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _delete_artist_directory(artist_name: str) -> None:
@@ -1790,11 +1794,8 @@ def read_entries(kind: str) -> List[Dict[str, str]]:
 
     with _lock:
         _ensure_database_ready_locked()
-        conn = _get_database_connection()
-        try:
+        with _database_connection() as conn:
             rows = conn.execute(query).fetchall()
-        finally:
-            conn.close()
 
     entries: List[Dict[str, str]] = []
     for row in rows:
@@ -1830,8 +1831,7 @@ def add_entry(
         artist_label = (display_name or "").strip() or artist_id
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 existing = conn.execute(
                     "SELECT 1 FROM artists WHERE id = ?",
                     (artist_id,),
@@ -1843,8 +1843,6 @@ def add_entry(
                     (artist_id, artist_label),
                 )
                 conn.commit()
-            finally:
-                conn.close()
 
         message = f"Added {LIST_LABELS[kind][:-1]} '{artist_label}'."
         _publish_discord_event(
@@ -1863,8 +1861,7 @@ def add_entry(
 
     with _lock:
         _ensure_database_ready_locked()
-        conn = _get_database_connection()
-        try:
+        with _database_connection() as conn:
             if kind == "album":
                 title = (display_name or "").strip()
                 artist = (artist_name or "").strip()
@@ -1898,8 +1895,6 @@ def add_entry(
                 label = title or value
             else:  # pragma: no cover - unsupported kind
                 return False, "Unknown list type."
-        finally:
-            conn.close()
 
     message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
     details = {"list": kind, "id": value, "label": label}
@@ -2112,14 +2107,11 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     if kind == "artist":
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 row = conn.execute(
                     "SELECT rowid AS rid, id, name FROM artists ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
                     (index,),
                 ).fetchone()
-            finally:
-                conn.close()
         if row is None:
             return False, "Entry not found."
 
@@ -2129,12 +2121,9 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
 
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 conn.execute("DELETE FROM artists WHERE rowid = ?", (artist_rowid,))
                 conn.commit()
-            finally:
-                conn.close()
 
         if artist_name:
             _delete_artist_directory(artist_name)
@@ -2155,14 +2144,11 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     if kind == "album":
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 row = conn.execute(
                     "SELECT rowid AS rid, id, title, artist FROM albums ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
                     (index,),
                 ).fetchone()
-            finally:
-                conn.close()
         if row is None:
             return False, "Entry not found."
 
@@ -2182,12 +2168,9 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
 
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 conn.execute("DELETE FROM albums WHERE rowid = ?", (album_rowid,))
                 conn.commit()
-            finally:
-                conn.close()
 
         removed_label = album_title or album_id
         message = f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
@@ -2204,14 +2187,11 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     if kind == "track":
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 row = conn.execute(
                     "SELECT rowid AS rid, id, title, artist, album FROM tracks ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
                     (index,),
                 ).fetchone()
-            finally:
-                conn.close()
         if row is None:
             return False, "Entry not found."
 
@@ -2232,12 +2212,9 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
 
         with _lock:
             _ensure_database_ready_locked()
-            conn = _get_database_connection()
-            try:
+            with _database_connection() as conn:
                 conn.execute("DELETE FROM tracks WHERE rowid = ?", (track_rowid,))
                 conn.commit()
-            finally:
-                conn.close()
 
         removed_label = track_title or track_id
         message = f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
@@ -2287,6 +2264,104 @@ def redirect_location(
 class ListRequestHandler(BaseHTTPRequestHandler):
     server_version = "OrpheusListHTTP/1.0"
 
+    @staticmethod
+    def _parse_limit(value: str | None, default: int = 10) -> int:
+        try:
+            return int(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    def _handle_search_request(
+        self,
+        parsed: ParseResult,
+        kind: str,
+        search_fn: Callable[[str, int], List[Dict[str, Any]]],
+    ) -> None:
+        params = parse_qs(parsed.query)
+        query = (params.get("q") or [""])[0].strip()
+        limit_raw = (params.get("limit") or [None])[0]
+        limit = self._parse_limit(limit_raw, default=10)
+
+        client = self.address_string()
+        logging.info(
+            "Received %s search request from %s with query=%r limit=%s.",
+            kind,
+            client,
+            query,
+            limit,
+        )
+        if not query:
+            self.send_json(
+                {"error": "Missing search query."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        try:
+            results = search_fn(query, limit=limit)
+        except RuntimeError as exc:
+            message = str(exc)
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if "app_id" in message
+                else HTTPStatus.BAD_GATEWAY
+            )
+            logging.warning(
+                "%s search request for query %r failed with status %s: %s",
+                kind.capitalize(),
+                query,
+                status,
+                message,
+            )
+            self.send_json({"error": message}, status=status)
+            return
+
+        logging.info(
+            "%s search request for query %r returning %s result(s) to client.",
+            kind.capitalize(),
+            query,
+            len(results),
+        )
+        self.send_json({"results": results})
+
+    def _parse_request_fields(
+        self, raw_body: bytes, content_type: str | None
+    ) -> Tuple[Dict[str, str], Optional[str]]:
+        if not raw_body:
+            return {}, None
+
+        try:
+            decoded = raw_body.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}, "Request body must be UTF-8 encoded."
+
+        normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+        if normalized_type == "application/json":
+            try:
+                payload = json.loads(decoded or "{}")
+            except json.JSONDecodeError:
+                return {}, "Invalid JSON body."
+
+            if not isinstance(payload, dict):
+                return {}, "Invalid request payload."
+
+            data: Dict[str, str] = {}
+            for key, value in payload.items():
+                if value is None:
+                    data[str(key)] = ""
+                elif isinstance(value, (str, int, float)):
+                    data[str(key)] = str(value)
+                else:
+                    data[str(key)] = ""
+            return data, None
+
+        try:
+            parsed_fields = parse_qs(decoded)
+        except ValueError:
+            return {}, "Invalid form payload."
+
+        return {key: values[0] for key, values in parsed_fields.items() if values}, None
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/api/artist-search":
@@ -2330,31 +2405,30 @@ class ListRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         content_length = int(self.headers.get("Content-Length", "0"))
-        payload = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+        payload = self.rfile.read(content_length) if content_length else b""
+        content_type = self.headers.get("Content-Type", "")
         if parsed.path == "/api/artist-select":
-            self.handle_artist_select(payload, self.headers.get("Content-Type", ""))
+            self.handle_artist_select(payload, content_type)
             return
 
         if parsed.path == "/api/album-select":
-            self.handle_album_select(payload, self.headers.get("Content-Type", ""))
+            self.handle_album_select(payload, content_type)
             return
 
         if parsed.path == "/api/track-select":
-            self.handle_track_select(payload, self.headers.get("Content-Type", ""))
+            self.handle_track_select(payload, content_type)
             return
 
-        data = {k: v[0] for k, v in parse_qs(payload).items() if v}
-
         if parsed.path == "/download-photos":
-            self.handle_download_photos(data)
+            self.handle_download_photos(payload, content_type)
             return
 
         if parsed.path == "/purge-photos":
-            self.handle_purge_photos(data)
+            self.handle_purge_photos(payload, content_type)
             return
 
         if parsed.path == "/delete":
-            self.handle_delete(data)
+            self.handle_delete(payload, content_type)
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
@@ -2399,163 +2473,19 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def handle_artist_search(self, parsed) -> None:
-        params = parse_qs(parsed.query)
-        query = (params.get("q") or [""])[0].strip()
-        limit_raw = (params.get("limit") or ["10"])[0]
-        try:
-            limit = int(limit_raw)
-        except ValueError:
-            limit = 10
-
-        logging.info(
-            "Received artist search request from %s with query=%r limit=%s.",
-            self.address_string(),
-            query,
-            limit,
-        )
-        if not query:
-            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
-            return
-
-        try:
-            results = _qobuz_artist_search(query, limit=limit)
-        except RuntimeError as exc:
-            message = str(exc)
-            status = HTTPStatus.SERVICE_UNAVAILABLE if "app_id" in message else HTTPStatus.BAD_GATEWAY
-            logging.warning(
-                "Artist search request for query %r failed with status %s: %s",
-                query,
-                status,
-                message,
-            )
-            self.send_json({"error": message}, status=status)
-            return
-
-        logging.info(
-            "Artist search request for query %r returning %s result(s) to client.",
-            query,
-            len(results),
-        )
-        self.send_json({"results": results})
+        self._handle_search_request(parsed, "artist", _qobuz_artist_search)
 
     def handle_album_search(self, parsed) -> None:
-        params = parse_qs(parsed.query)
-        query = (params.get("q") or [""])[0].strip()
-        limit_raw = (params.get("limit") or ["10"])[0]
-        try:
-            limit = int(limit_raw)
-        except ValueError:
-            limit = 10
-
-        logging.info(
-            "Received album search request from %s with query=%r limit=%s.",
-            self.address_string(),
-            query,
-            limit,
-        )
-        if not query:
-            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
-            return
-
-        try:
-            results = _qobuz_album_search(query, limit=limit)
-        except RuntimeError as exc:
-            message = str(exc)
-            status = (
-                HTTPStatus.SERVICE_UNAVAILABLE
-                if "app_id" in message
-                else HTTPStatus.BAD_GATEWAY
-            )
-            logging.warning(
-                "Album search request for query %r failed with status %s: %s",
-                query,
-                status,
-                message,
-            )
-            self.send_json({"error": message}, status=status)
-            return
-
-        logging.info(
-            "Album search request for query %r returning %s result(s) to client.",
-            query,
-            len(results),
-        )
-        self.send_json({"results": results})
+        self._handle_search_request(parsed, "album", _qobuz_album_search)
 
     def handle_track_search(self, parsed) -> None:
-        params = parse_qs(parsed.query)
-        query = (params.get("q") or [""])[0].strip()
-        limit_raw = (params.get("limit") or ["10"])[0]
-        try:
-            limit = int(limit_raw)
-        except ValueError:
-            limit = 10
+        self._handle_search_request(parsed, "track", _qobuz_track_search)
 
-        logging.info(
-            "Received track search request from %s with query=%r limit=%s.",
-            self.address_string(),
-            query,
-            limit,
-        )
-        if not query:
-            self.send_json({"error": "Missing search query."}, status=HTTPStatus.BAD_REQUEST)
+    def handle_artist_select(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.send_json({"error": error}, status=HTTPStatus.BAD_REQUEST)
             return
-
-        try:
-            results = _qobuz_track_search(query, limit=limit)
-        except RuntimeError as exc:
-            message = str(exc)
-            status = (
-                HTTPStatus.SERVICE_UNAVAILABLE
-                if "app_id" in message
-                else HTTPStatus.BAD_GATEWAY
-            )
-            logging.warning(
-                "Track search request for query %r failed with status %s: %s",
-                query,
-                status,
-                message,
-            )
-            self.send_json({"error": message}, status=status)
-            return
-
-        logging.info(
-            "Track search request for query %r returning %s result(s) to client.",
-            query,
-            len(results),
-        )
-        self.send_json({"results": results})
-
-    def handle_artist_select(self, raw_body: str, content_type: str | None) -> None:
-        content_type = (content_type or "").split(";", 1)[0].strip().lower()
-        data: Dict[str, str] = {}
-
-        if content_type == "application/json":
-            try:
-                payload = json.loads(raw_body or "{}")
-            except json.JSONDecodeError:
-                self.send_json(
-                    {"error": "Invalid JSON body."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    if value is None:
-                        data[str(key)] = ""
-                    elif isinstance(value, (str, int, float)):
-                        data[str(key)] = str(value)
-                    else:
-                        data[str(key)] = ""
-            else:
-                self.send_json(
-                    {"error": "Invalid request payload."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-        else:
-            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
 
         artist_id = data.get("id", "").strip()
         artist_name = data.get("name", "").strip()
@@ -2607,36 +2537,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def handle_album_select(self, raw_body: str, content_type: str | None) -> None:
-        content_type = (content_type or "").split(";", 1)[0].strip().lower()
-        data: Dict[str, str] = {}
-
-        if content_type == "application/json":
-            try:
-                payload = json.loads(raw_body or "{}")
-            except json.JSONDecodeError:
-                self.send_json(
-                    {"error": "Invalid JSON body."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    if value is None:
-                        data[str(key)] = ""
-                    elif isinstance(value, (str, int, float)):
-                        data[str(key)] = str(value)
-                    else:
-                        data[str(key)] = ""
-            else:
-                self.send_json(
-                    {"error": "Invalid request payload."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-        else:
-            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
+    def handle_album_select(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.send_json({"error": error}, status=HTTPStatus.BAD_REQUEST)
+            return
 
         album_id = data.get("id", "").strip()
         album_title = data.get("title", "").strip()
@@ -2707,36 +2612,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def handle_track_select(self, raw_body: str, content_type: str | None) -> None:
-        content_type = (content_type or "").split(";", 1)[0].strip().lower()
-        data: Dict[str, str] = {}
-
-        if content_type == "application/json":
-            try:
-                payload = json.loads(raw_body or "{}")
-            except json.JSONDecodeError:
-                self.send_json(
-                    {"error": "Invalid JSON body."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    if value is None:
-                        data[str(key)] = ""
-                    elif isinstance(value, (str, int, float)):
-                        data[str(key)] = str(value)
-                    else:
-                        data[str(key)] = ""
-            else:
-                self.send_json(
-                    {"error": "Invalid request payload."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-        else:
-            data = {k: v[0] for k, v in parse_qs(raw_body).items() if v}
+    def handle_track_select(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.send_json({"error": error}, status=HTTPStatus.BAD_REQUEST)
+            return
 
         track_id = data.get("id", "").strip()
         track_title = data.get("title", "").strip()
@@ -2807,7 +2687,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def handle_purge_photos(self, data: Dict[str, str]) -> None:
+    def handle_purge_photos(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.redirect_home(error, is_error=True)
+            return
+
         selected = normalize_kind(data.get("selected")) or "artist"
         removed = purge_cached_photos()
         logging.info("Photo purge requested by %s removed %s file(s).", self.address_string(), removed)
@@ -2817,7 +2702,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             message = "No cached photos found."
         self.redirect_home(message, is_error=False, selected=selected)
 
-    def handle_download_photos(self, data: Dict[str, str]) -> None:
+    def handle_download_photos(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.redirect_home(error, is_error=True)
+            return
+
         selected = normalize_kind(data.get("selected")) or "artist"
         try:
             artist_count, album_count, extra_messages = download_missing_photos()
@@ -2856,7 +2746,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         )
         self.redirect_home(message, is_error=False, selected=selected)
 
-    def handle_delete(self, data: Dict[str, str]) -> None:
+    def handle_delete(self, raw_body: bytes, content_type: str | None) -> None:
+        data, error = self._parse_request_fields(raw_body, content_type)
+        if error:
+            self.redirect_home(error, is_error=True)
+            return
+
         kind = normalize_kind(data.get("list"))
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
