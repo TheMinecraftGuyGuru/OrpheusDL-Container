@@ -319,7 +319,7 @@ SEARCH_SCRIPT = """
       inputHint: 'Enter at least an album or artist name.',
       emptyMessage: 'No albums found.',
       successPrompt: 'Select an album to queue for download.',
-      addSuccess: 'Album queued for luckysearch.',
+      addSuccess: 'Album queued for download.',
       clearOnSuccess: true,
       buildQuery(values) {
         return joinNonEmpty([values['album-search-title'] || '', values['album-search-artist'] || '']);
@@ -385,7 +385,7 @@ SEARCH_SCRIPT = """
       inputHint: 'Enter at least a track name.',
       emptyMessage: 'No tracks found.',
       successPrompt: 'Select a track to queue for download.',
-      addSuccess: 'Track queued for luckysearch.',
+      addSuccess: 'Track queued for download.',
       clearOnSuccess: true,
       buildQuery(values) {
         return joinNonEmpty([
@@ -1943,17 +1943,17 @@ def _trigger_artist_download(artist_id: str) -> None:
     )
 
 
-def _run_luckysearch(kind: str, value: str) -> None:
+def _run_download(kind: str, value: str) -> None:
     command = [
         "python3",
         "-u",
         "orpheus.py",
-        "luckysearch",
+        "download",
         "qobuz",
         kind,
         value,
     ]
-    logging.info("Starting luckysearch for %s: %s", kind, value)
+    logging.info("Starting download for %s: %s", kind, value)
     try:
         result = subprocess.run(
             command,
@@ -1961,33 +1961,33 @@ def _run_luckysearch(kind: str, value: str) -> None:
             check=False,
         )
     except Exception as exc:  # pragma: no cover - subprocess failure
-        logging.exception("Failed to launch luckysearch for %s: %s", kind, value)
+        logging.exception("Failed to launch download for %s: %s", kind, value)
         _enqueue_async_message(
-            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': {exc}",
+            f"Download failed for {LIST_LABELS[kind][:-1]} '{value}': {exc}",
             True,
         )
         return
 
     if result.returncode != 0:
         logging.error(
-            "Luckysearch exited with %s for %s:%s. See docker logs for output.",
+            "Download exited with %s for %s:%s. See docker logs for output.",
             result.returncode,
             kind,
             value,
         )
         _enqueue_async_message(
-            f"Luckysearch failed for {LIST_LABELS[kind][:-1]} '{value}': exit code {result.returncode}. Check logs for details.",
+            f"Download failed for {LIST_LABELS[kind][:-1]} '{value}': exit code {result.returncode}. Check logs for details.",
             True,
         )
     else:
-        logging.info("Luckysearch succeeded for %s: %s", kind, value)
+        logging.info("Download succeeded for %s: %s", kind, value)
 
 
-def _trigger_luckysearch(kind: str, value: str) -> None:
+def _trigger_download(kind: str, value: str) -> None:
     sanitized = sanitize_entry_value(value)
     if sanitized is None:
         logging.info(
-            "Skipping luckysearch for %s entry %r due to scheduler sanitisation.",
+            "Skipping download for %s entry %r due to scheduler sanitisation.",
             kind,
             value,
         )
@@ -1999,8 +1999,8 @@ def _trigger_luckysearch(kind: str, value: str) -> None:
         return
 
     _queue_orpheus_task(
-        f"luckysearch {kind} {sanitized}",
-        functools.partial(_run_luckysearch, kind, sanitized),
+        f"download {kind} {sanitized}",
+        functools.partial(_run_download, kind, sanitized),
     )
 
 
@@ -2549,19 +2549,19 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             return
 
         logging.info("Album %s added to list: %s", album_id, add_message)
-        _trigger_luckysearch("album", album_id)
+        _trigger_download("album", album_id)
 
         label = album_title or label_value
         if album_artist and album_title:
             combined_message = (
-                f"Added album '{album_title}' by {album_artist} and queued luckysearch."
+                f"Added album '{album_title}' by {album_artist} and queued download."
             )
         elif album_artist:
             combined_message = (
-                f"Added album by {album_artist} and queued luckysearch."
+                f"Added album by {album_artist} and queued download."
             )
         else:
-            combined_message = f"Added album '{label}' and queued luckysearch."
+            combined_message = f"Added album '{label}' and queued download."
 
         redirect = redirect_location(
             message=combined_message,
@@ -2653,7 +2653,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             return
 
         logging.info("Track %s added to list: %s", track_id, add_message)
-        _trigger_luckysearch("track", track_id)
+        _trigger_download("track", track_id)
 
         label = track_title or label_value
         pieces = [f"Added track '{label}'"]
@@ -2661,7 +2661,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             pieces.append(f"by {artist_name}")
         if album_title:
             pieces.append(f"from album '{album_title}'")
-        combined_message = " ".join(pieces) + " and queued luckysearch."
+        combined_message = " ".join(pieces) + " and queued download."
 
         redirect = redirect_location(
             message=combined_message,

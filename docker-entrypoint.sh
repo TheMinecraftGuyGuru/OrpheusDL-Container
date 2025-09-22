@@ -67,8 +67,8 @@ process_list() {
             continue
         fi
 
-        echo "[lists] running luckysearch for $kind: $line"
-        if ! python3 -u orpheus.py luckysearch qobuz "$kind" "$line"; then
+        echo "[lists] running download for $kind: $line"
+        if ! python3 -u orpheus.py download qobuz "$kind" "$line"; then
             echo "[lists] command failed for $kind entry: $line" >&2
         fi
     done < <(python3 - "$lists_db" "$kind" <<'PY'

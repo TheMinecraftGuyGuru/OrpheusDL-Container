@@ -6,7 +6,7 @@ A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/
 
 - Starting the image with no explicit command launches two processes:
   - `list_ui_server.py` provides a management UI bound to `$LISTS_WEB_PORT` (default `8080`).
-  - A foreground scheduler runs once a day at midnight and executes `luckysearch` downloads for every list entry in `/data/orpheusdl-container.db`.
+  - A foreground scheduler runs once a day at midnight and executes `download qobuz <type> <id>` for each record stored in `/data/orpheusdl-container.db`.
 - Any other command supplied to `docker run … <command>` executes through the entrypoint with Python's unbuffered mode forced so output is streamed straight into `docker logs`.
 - Override the entrypoint if you need an interactive shell: `docker run --rm -it --entrypoint bash ghcr.io/theminecraftguyguru/orpheusdl-container`.
 
@@ -48,10 +48,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./music:/data/music
-      - ./orpheusdl-container.db:/data/orpheusdl-container.db
-      # Optional: surface a directory for uploaded photos/covers
-      - ./photos:/data/photos
+      - ./music:/data/music # optional, if not included, music will go into the same folder as data
+      - ./data:/data # stores database of artists, albums, and tracks, and cached album covers and artist photos for webUI
     restart: unless-stopped
 ```
 
