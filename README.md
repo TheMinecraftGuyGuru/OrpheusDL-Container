@@ -21,7 +21,7 @@ The bundled web interface ships with **no authentication and no TLS/SSL support*
 docker run --rm \
   -p 8080:8080 \
   -v "$(pwd)/music:/data/music" \
-  -v "$(pwd)/orpheusdl-container.db:/data/orpheusdl-container.db" \
+  -v "$(pwd)/data:/data" \
   -e QOBUZ_APP_ID=your_app_id \
   -e QOBUZ_APP_SECRET=your_app_secret \
   -e QOBUZ_USER_ID=your_user_id \
