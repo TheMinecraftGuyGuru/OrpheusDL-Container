@@ -7,16 +7,16 @@
 ## Current Repository Snapshot
 
 ### Purpose
-- This repository packages the [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) music downloader and its Qobuz provider module into a container-friendly layout so the tool can be built and run in a consistent environment.
+- This repository packages the [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) music downloader together with the Qobuz, Musixmatch, and Apple Music provider modules into a container-friendly layout so the tool can be built and run in a consistent environment.
 
 ### Layout Highlights
 - Root directory contains infrastructure assets only:
-  - `Dockerfile`: Alpine-based build that installs system packages, fetches Git submodules, installs Python dependencies from `external/orpheusdl/requirements.txt`, copies the OrpheusDL core and Qobuz module into `/orpheusdl`, and sets a Bash entrypoint with `/orpheusdl` as the working directory.
+  - `Dockerfile`: Alpine-based build that installs system packages, fetches Git submodules, installs Python dependencies from `external/orpheusdl/requirements.txt`, copies the OrpheusDL core plus bundled provider modules into `/orpheusdl`, and sets a Bash entrypoint with `/orpheusdl` as the working directory.
   - `settings.json`: Default OrpheusDL configuration bundled into the image. It defines download paths/quality, formatting rules, lyrics & cover behaviour, playlist preferences, codec conversion options, and placeholder Qobuz credentials (empty strings by default).
   - `list_ui_server.py`: Lightweight HTTP UI for inspecting and editing the artists/albums/tracks queue stored in the `/data/orpheusdl-container.db` SQLite database; listens on `$LISTS_WEB_PORT` (default `8080`) and serialises writes with an internal lock.
   - `README.md`: Currently only contains the project title; add setup or usage instructions here if you gather them.
-  - `.gitmodules`: Declares the `external/orpheusdl` and `external/orpheusdl-qobuz` submodules; the directories exist but are empty unless initialised.
-- `external/`: Hosts the OrpheusDL core and Qobuz provider submodules. Run `git submodule update --init --recursive` after cloning or before building the Docker image so their contents are available.
+  - `.gitmodules`: Declares the `external/orpheusdl`, `external/orpheusdl-qobuz`, `external/orpheusdl-musixmatch`, and `external/orpheusdl-applemusic-basic` submodules; the directories exist but are empty unless initialised.
+- `external/`: Hosts the OrpheusDL core alongside the Qobuz, Musixmatch, and Apple Music provider submodules. Run `git submodule update --init --recursive` after cloning or before building the Docker image so their contents are available.
 
 ### Build & Runtime Flow
 - Building: `docker build -t orpheusdl .` (ensure submodules are populated first or the copy steps in the Dockerfile will fail).
@@ -38,8 +38,8 @@ paths are relative to the repo root unless stated otherwise.
 - `.github/workflows/docker-publish.yml`: GitHub Actions workflow that builds the container image
   on pushes to `main` (or manual dispatch), authenticates against GHCR, and pushes the image tagged
   as `latest` and with the commit SHA.
-- `.gitmodules`: Declares the two Git submodules that hold the OrpheusDL core and the Qobuz
-  provider module. You must run `git submodule update --init --recursive` before building so the
+- `.gitmodules`: Declares the Git submodules for the OrpheusDL core plus the Qobuz, Musixmatch,
+  and Apple Music provider modules. Run `git submodule update --init --recursive` before building so the
   Dockerfile copy steps succeed.
 
 ### Documentation & Guidance
@@ -50,9 +50,9 @@ paths are relative to the repo root unless stated otherwise.
 
 ### Container Build & Entrypoint
 - `Dockerfile`: Alpine-based build. Installs OS dependencies, copies repo contents, initialises
-  submodules, installs OrpheusDL Python requirements, then stages OrpheusDL and the Qobuz module
-  under `/orpheusdl`. Sets `/usr/local/bin/docker-entrypoint.sh` as the entrypoint and switches the
-  working directory to `/orpheusdl` for runtime.
+  submodules, installs OrpheusDL Python requirements, then stages the OrpheusDL core plus the Qobuz,
+  Musixmatch, and Apple Music modules under `/orpheusdl`. Sets `/usr/local/bin/docker-entrypoint.sh` as the
+  entrypoint and switches the working directory to `/orpheusdl` for runtime.
 - `docker-entrypoint.sh`: Runtime orchestration script. Ensures the `/data/orpheusdl-container.db` SQLite database exists,
   syncs Qobuz credentials from environment variables into `/orpheusdl/config/settings.json`, manages default
   behaviour (starts `list_ui_server.py` and the continuous oldest-first scheduler when no command is supplied), and
@@ -73,5 +73,9 @@ paths are relative to the repo root unless stated otherwise.
   builds; contents are copied into `/orpheusdl/`.
 - `external/orpheusdl-qobuz`: Git submodule for the Qobuz provider. Copied into
   `/orpheusdl/modules/qobuz/` during the image build.
+- `external/orpheusdl-musixmatch`: Git submodule for the Musixmatch provider. Copied into
+  `/orpheusdl/modules/musixmatch/` during the image build.
+- `external/orpheusdl-applemusic-basic`: Git submodule for the Apple Music provider (lyrics/covers/playlists). Copied into
+  `/orpheusdl/modules/applemusic/` during the image build.
 
 EOF
