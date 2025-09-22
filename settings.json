@@ -12,10 +12,10 @@
         "formatting": {
             "album_format": "{name}{explicit} {quality}",
             "playlist_format": "{name}{explicit}",
-            "track_filename_format": "{track_number}. {name}{explicit} {sample_rate} {bit_depth}",
-            "single_full_path_format": "{name}{explicit}",
+            "track_filename_format": "{track_number}. {name}{explicit} [{sample_rate}kHz {bit_depth}bit]",
+            "single_full_path_format": "{artist}/{{name}{explicit} [{sample_rate}kHz {bit_depth}bit]",
             "enable_zfill": true,
-            "force_album_format": true
+            "force_album_format": false
         },
         "codecs": {
             "proprietary_codecs": false,
