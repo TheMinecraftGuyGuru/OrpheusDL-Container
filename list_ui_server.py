@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, quote, unquote
 
 import requests
+from notifications import send_discord_notification as _send_discord_notification
 
 LIST_LABELS: Dict[str, str] = {
     "artist": "Artists",
@@ -475,6 +476,32 @@ SEARCH_SCRIPT = """
 })();
 </script>
 """.strip()
+
+
+def _publish_discord_event(
+    event: str,
+    message: str,
+    *,
+    level: str = "info",
+    title: str | None = "OrpheusDL Container",
+    details: Dict[str, str] | None = None,
+) -> None:
+    """Safely send a Discord notification for the provided event."""
+
+    try:
+        _send_discord_notification(
+            message,
+            event=event,
+            level=level,
+            title=title,
+            details=details,
+        )
+    except Exception:  # pragma: no cover - defensive guard
+        logging.getLogger(__name__).debug(
+            "Failed to publish Discord notification for event %s.",
+            event,
+            exc_info=True,
+        )
 
 def _resolve_lists_db_path() -> Path:
     explicit_paths = (
@@ -1818,7 +1845,21 @@ def add_entry(
                 conn.commit()
             finally:
                 conn.close()
-        return True, f"Added {LIST_LABELS[kind][:-1]} '{artist_label}'."
+
+        message = f"Added {LIST_LABELS[kind][:-1]} '{artist_label}'."
+        _publish_discord_event(
+            "list_entry_added",
+            message,
+            details={
+                "list": kind,
+                "id": artist_id,
+                "label": artist_label,
+            },
+        )
+        return True, message
+
+    artist = ""
+    album = ""
 
     with _lock:
         _ensure_database_ready_locked()
@@ -1860,7 +1901,17 @@ def add_entry(
         finally:
             conn.close()
 
-    return True, f"Added {LIST_LABELS[kind][:-1]} '{label}'."
+    message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
+    details = {"list": kind, "id": value, "label": label}
+    if kind == "album" and artist:
+        details["artist"] = artist
+    if kind == "track":
+        if artist:
+            details["artist"] = artist
+        if album:
+            details["album"] = album
+    _publish_discord_event("list_entry_added", message, details=details)
+    return True, message
 
 
 def sanitize_entry_value(value: str) -> str | None:
@@ -1875,6 +1926,21 @@ def sanitize_entry_value(value: str) -> str | None:
 def _enqueue_async_message(message: str, is_error: bool) -> None:
     with _async_lock:
         _async_messages.append((message, is_error))
+
+    notify = is_error
+    event = "async_error" if is_error else "async_info"
+    level = "error" if is_error else "info"
+
+    lower = message.lower()
+    if not notify and lower.startswith("download completed"):
+        notify = True
+        event = "download_completed"
+        level = "success"
+    elif is_error and lower.startswith("download failed"):
+        event = "download_failed"
+
+    if notify:
+        _publish_discord_event(event, message, level=level)
 
 
 def _consume_async_messages() -> List[Tuple[str, bool]]:
@@ -2074,7 +2140,17 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
             _delete_artist_directory(artist_name)
 
         removed_label = artist_name or artist_id
-        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        message = f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        _publish_discord_event(
+            "list_entry_removed",
+            message,
+            details={
+                "list": kind,
+                "id": artist_id,
+                "label": removed_label,
+            },
+        )
+        return True, message
 
     if kind == "album":
         with _lock:
@@ -2114,7 +2190,16 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
                 conn.close()
 
         removed_label = album_title or album_id
-        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        message = f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        details = {
+            "list": kind,
+            "id": album_id,
+            "label": removed_label,
+        }
+        if album_artist:
+            details["artist"] = album_artist
+        _publish_discord_event("list_entry_removed", message, details=details)
+        return True, message
 
     if kind == "track":
         with _lock:
@@ -2155,7 +2240,18 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
                 conn.close()
 
         removed_label = track_title or track_id
-        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        message = f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        details = {
+            "list": kind,
+            "id": track_id,
+            "label": removed_label,
+        }
+        if track_artist:
+            details["artist"] = track_artist
+        if track_album:
+            details["album"] = track_album
+        _publish_discord_event("list_entry_removed", message, details=details)
+        return True, message
 
     return False, "Entry not found."
 
