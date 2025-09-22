@@ -38,6 +38,93 @@ class ArtistSearchTimeoutTests(unittest.TestCase):
         self.assertEqual(payload.get("error"), "Qobuz search timed out.")
 
 
+class DatabaseListStorageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tempdir.cleanup)
+
+        base_path = Path(self._tempdir.name)
+        self.lists_dir = base_path / "lists"
+        self.lists_dir.mkdir()
+
+        self._original_lists_dir = list_ui_server.LISTS_DIR
+        self._original_db_initialized = list_ui_server._DB_INITIALIZED
+
+        list_ui_server.LISTS_DIR = self.lists_dir
+        list_ui_server._DB_INITIALIZED = False
+
+        self.addCleanup(self._restore_paths)
+
+    def _restore_paths(self) -> None:
+        list_ui_server.LISTS_DIR = self._original_lists_dir
+        list_ui_server._DB_INITIALIZED = self._original_db_initialized
+
+    def test_add_album_stores_id_and_metadata(self) -> None:
+        success, message = list_ui_server.add_entry(
+            "album",
+            "90210",
+            display_name="Test Album",
+            artist_name="Example Artist",
+        )
+
+        self.assertTrue(success, msg=message)
+
+        albums = list_ui_server.read_entries("album")
+        self.assertEqual(len(albums), 1)
+        album_entry = albums[0]
+        self.assertEqual(album_entry.get("id"), "90210")
+        self.assertEqual(album_entry.get("title"), "Test Album")
+        self.assertEqual(album_entry.get("artist"), "Example Artist")
+
+        duplicate_success, duplicate_message = list_ui_server.add_entry(
+            "album",
+            "90210",
+            display_name="Duplicate Title",
+            artist_name="Different Artist",
+        )
+
+        self.assertFalse(duplicate_success)
+        self.assertIn("already present", duplicate_message)
+
+        removed, remove_message = list_ui_server.remove_entry("album", 0)
+        self.assertTrue(removed, msg=remove_message)
+        self.assertEqual(list_ui_server.read_entries("album"), [])
+
+    def test_add_track_stores_id_and_metadata(self) -> None:
+        success, message = list_ui_server.add_entry(
+            "track",
+            "808",
+            display_name="Test Track",
+            artist_name="Example Artist",
+            album_title="Example Album",
+        )
+
+        self.assertTrue(success, msg=message)
+
+        tracks = list_ui_server.read_entries("track")
+        self.assertEqual(len(tracks), 1)
+        track_entry = tracks[0]
+        self.assertEqual(track_entry.get("id"), "808")
+        self.assertEqual(track_entry.get("title"), "Test Track")
+        self.assertEqual(track_entry.get("artist"), "Example Artist")
+        self.assertEqual(track_entry.get("album"), "Example Album")
+
+        duplicate_success, duplicate_message = list_ui_server.add_entry(
+            "track",
+            "808",
+            display_name="Duplicate Track",
+            artist_name="Different Artist",
+            album_title="Different Album",
+        )
+
+        self.assertFalse(duplicate_success)
+        self.assertIn("already present", duplicate_message)
+
+        removed, remove_message = list_ui_server.remove_entry("track", 0)
+        self.assertTrue(removed, msg=remove_message)
+        self.assertEqual(list_ui_server.read_entries("track"), [])
+
+
 class RemoveArtistDirectoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tempdir = tempfile.TemporaryDirectory()
@@ -50,14 +137,17 @@ class RemoveArtistDirectoryTests(unittest.TestCase):
 
         self._original_music_dir = list_ui_server.MUSIC_DIR
         self._original_lists_dir = list_ui_server.LISTS_DIR
+        self._original_db_initialized = list_ui_server._DB_INITIALIZED
         list_ui_server.MUSIC_DIR = self.music_dir
         list_ui_server.LISTS_DIR = self.lists_dir
+        list_ui_server._DB_INITIALIZED = False
 
         self.addCleanup(self._restore_paths)
 
     def _restore_paths(self) -> None:
         list_ui_server.MUSIC_DIR = self._original_music_dir
         list_ui_server.LISTS_DIR = self._original_lists_dir
+        list_ui_server._DB_INITIALIZED = self._original_db_initialized
 
     def _write_artists(self, entries):
         with list_ui_server._lock:
