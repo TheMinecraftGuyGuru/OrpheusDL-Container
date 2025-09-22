@@ -76,7 +76,7 @@
             "password": ""
         },
         "musixmatch": {
-            "token_limit": 10,
+            "token_limit": 100,
             "lyrics_format": "enhanced",
             "custom_time_decimals": false
         }
