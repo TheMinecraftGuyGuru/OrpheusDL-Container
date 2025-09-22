@@ -68,16 +68,17 @@
     },
     "extensions": {},
     "modules": {
-        "musixmatch": {
-            "token_limit": 10,
-            "lyrics_format": "enhanced",
-            "custom_time_decimals": false
-        },
         "qobuz": {
             "app_id": "",
             "app_secret": "",
             "quality_format": "{sample_rate}kHz {bit_depth}bit",
             "username": "",
             "password": ""
+        },
+        "musixmatch": {
+            "token_limit": 10,
+            "lyrics_format": "enhanced",
+            "custom_time_decimals": false
         }
     }
+}
