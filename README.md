@@ -44,9 +44,6 @@ services:
       # Optional runtime tuning
       - LISTS_WEB_PORT=8080          # change to expose the UI on a different port
       - LISTS_WEB_HOST=0.0.0.0       # bind UI to a specific interface
-      - LISTS_DB_PATH=/data/orpheusdl-container.db # relocate the lists database file
-      - MUSIC_DIR=/data/music        # relocate downloaded music
-      - LISTS_PHOTO_DIR=/data/photos # enable cover uploads via the UI
       - LISTS_WEB_LOG_LEVEL=INFO     # adjust UI logging verbosity
     ports:
       - "8080:8080"
@@ -58,7 +55,7 @@ services:
     restart: unless-stopped
 ```
 
-> **Note:** The compose example above is provided for reference only—do not commit a `docker-compose.yml` file to this repository.
+> **Note:** The compose example above is provided for reference only - edit to fit your environment
 
 ## Environment variables
 
@@ -70,9 +67,6 @@ services:
 | `QOBUZ_TOKEN` | Yes | Qobuz user authentication token; mirrored into the legacy password field. | Also accepts `QOBUZ_USER_AUTH_TOKEN`, `QOBUZ_AUTH_TOKEN`, `TOKEN`, or `USER_AUTH_TOKEN` (case-insensitive). |
 | `LISTS_WEB_PORT` | No (default `8080`) | Port exposed by `list_ui_server.py`. Update the host mapping in your runtime configuration when you change this value. | |
 | `LISTS_WEB_HOST` | No (default `0.0.0.0`) | Interface bound by the web UI. | |
-| `LISTS_DB_PATH` | No (default `/data/orpheusdl-container.db`) | Path to the SQLite database that stores artist/album/track queues. | Also accepts `LISTS_DB`; legacy `LISTS_DIR` values append `/orpheusdl-container.db`. |
-| `MUSIC_DIR` | No (default `/data/music`) | Destination for downloaded audio files. | Should be a persistent volume. |
-| `LISTS_PHOTO_DIR` | No (default `/data/photos`) | Directory where the UI stores uploaded cover images. | Mount a volume if you plan to use artwork uploads. |
 | `LISTS_WEB_LOG_LEVEL` | No (default `INFO`) | Logging level used by the list UI (e.g., `DEBUG`, `INFO`, `WARNING`). | |
 
 Lowercase variants of the Qobuz credential variables are also detected by the entrypoint.

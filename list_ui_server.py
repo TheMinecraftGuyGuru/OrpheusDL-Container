@@ -9,6 +9,7 @@ import importlib.util
 import json
 import logging
 import os
+import queue
 import shutil
 import sqlite3
 import subprocess
@@ -18,7 +19,7 @@ import unicodedata
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, quote, unquote
 
 import requests
@@ -527,6 +528,10 @@ _lock = threading.RLock()
 _async_lock = threading.Lock()
 _async_messages: List[Tuple[str, bool]] = []
 _photo_lock = threading.RLock()
+
+_orpheus_worker: Optional[threading.Thread] = None
+_orpheus_worker_lock = threading.Lock()
+_orpheus_queue: "queue.Queue[Tuple[str, Callable[[], None]]]" = queue.Queue()
 
 _DB_INITIALIZED = False
 
@@ -1844,6 +1849,40 @@ def _consume_async_messages() -> List[Tuple[str, bool]]:
         return messages
 
 
+def _orpheus_worker_main() -> None:
+    while True:
+        label, task = _orpheus_queue.get()
+        try:
+            logging.debug("Running queued Orpheus task: %s", label)
+            task()
+        except Exception:  # pragma: no cover - worker guard
+            logging.exception(
+                "Unexpected error while running queued Orpheus task %s.",
+                label,
+            )
+        finally:
+            _orpheus_queue.task_done()
+
+
+def _ensure_orpheus_worker() -> None:
+    global _orpheus_worker
+    with _orpheus_worker_lock:
+        if _orpheus_worker and _orpheus_worker.is_alive():
+            return
+        _orpheus_worker = threading.Thread(
+            target=_orpheus_worker_main,
+            name="orpheus-runner",
+            daemon=True,
+        )
+        _orpheus_worker.start()
+
+
+def _queue_orpheus_task(label: str, task: Callable[[], None]) -> None:
+    _ensure_orpheus_worker()
+    logging.info("Queued Orpheus command: %s", label)
+    _orpheus_queue.put((label, task))
+
+
 def _run_artist_download(artist_id: str) -> None:
     command = [
         "python3",
@@ -1896,13 +1935,10 @@ def _trigger_artist_download(artist_id: str) -> None:
         )
         return
 
-    worker = threading.Thread(
-        target=_run_artist_download,
-        args=(sanitized,),
-        name="download-artist",
-        daemon=True,
+    _queue_orpheus_task(
+        f"download artist {sanitized}",
+        functools.partial(_run_artist_download, sanitized),
     )
-    worker.start()
 
 
 def _run_luckysearch(kind: str, value: str) -> None:
@@ -1960,13 +1996,10 @@ def _trigger_luckysearch(kind: str, value: str) -> None:
             )
         return
 
-    worker = threading.Thread(
-        target=_run_luckysearch,
-        args=(kind, sanitized),
-        name=f"luckysearch-{kind}",
-        daemon=True,
+    _queue_orpheus_task(
+        f"luckysearch {kind} {sanitized}",
+        functools.partial(_run_luckysearch, kind, sanitized),
     )
-    worker.start()
 
 
 def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
@@ -2421,11 +2454,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
         if artist_name and artist_name != artist_id:
             combined_message = (
-                f"Added artist '{artist_name}' (ID {artist_id}) and started download."
+                f"Added artist '{artist_name}' (ID {artist_id}) and queued download."
             )
         else:
             combined_message = (
-                f"Added artist ID {artist_id} and started download."
+                f"Added artist ID {artist_id} and queued download."
             )
 
         redirect = redirect_location(
