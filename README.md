@@ -7,7 +7,8 @@ A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/
 
 - Starting the image with no explicit command launches two processes:
   - `list_ui_server.py` provides a management UI bound to `$LISTS_WEB_PORT` (default `8080`).
-  - A foreground scheduler runs once a day at midnight and executes `download qobuz <type> <id>` for each record stored in `/data/orpheusdl-container.db`.
+  - A foreground scheduler continuously chooses the queue entry with the oldest `last_checked_at` value (treating new entries as "Never"), runs `download qobuz <type> <id>`, and pauses briefly between attempts or when the queue is empty.
+  - The web UI surfaces the last checked timestamp for each list entry so you can confirm what the scheduler processed most recently.
 - Any other command supplied to `docker run … <command>` executes through the entrypoint with Python's unbuffered mode forced so output is streamed straight into `docker logs`.
 - Override the entrypoint if you need an interactive shell: `docker run --rm -it --entrypoint bash ghcr.io/theminecraftguyguru/orpheusdl-container`.
 
@@ -67,6 +68,8 @@ services:
 | `LISTS_WEB_PORT` | No (default `8080`) | Port exposed by `list_ui_server.py`. Update the host mapping in your runtime configuration when you change this value. | |
 | `LISTS_WEB_HOST` | No (default `0.0.0.0`) | Interface bound by the web UI. | |
 | `LISTS_WEB_LOG_LEVEL` | No (default `INFO`) | Logging level used by the list UI (e.g., `DEBUG`, `INFO`, `WARNING`). | |
+| `LISTS_SCHEDULER_INTERVAL` | No (default `5`) | Seconds to wait after finishing an entry before checking the queue again. | |
+| `LISTS_SCHEDULER_IDLE_SLEEP` | No (default `60`) | Sleep duration used when no entries are ready to download. | |
 
 Lowercase variants of the Qobuz credential variables are also detected by the entrypoint.
 

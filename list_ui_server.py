@@ -553,14 +553,16 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS artists (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_checked_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS albums (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL DEFAULT '',
             artist TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_checked_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tracks (
@@ -568,10 +570,21 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL DEFAULT '',
             artist TEXT NOT NULL DEFAULT '',
             album TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_checked_at TEXT
         );
         """
     )
+
+    for table_name in ("artists", "albums", "tracks"):
+        columns = {
+            (row["name"] if isinstance(row, sqlite3.Row) else row[1])
+            for row in conn.execute(f"PRAGMA table_info({table_name})")
+        }
+        if "last_checked_at" not in columns:
+            conn.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN last_checked_at TEXT"
+            )
 
 
 def _ensure_database_ready_locked() -> None:
@@ -593,7 +606,7 @@ def _read_artist_entries_locked() -> List[Dict[str, str]]:
     conn = _get_database_connection()
     try:
         rows = conn.execute(
-            "SELECT id, name FROM artists ORDER BY created_at, rowid"
+            "SELECT id, name, last_checked_at FROM artists ORDER BY created_at, rowid"
         ).fetchall()
     finally:
         conn.close()
@@ -602,10 +615,19 @@ def _read_artist_entries_locked() -> List[Dict[str, str]]:
     for row in rows:
         artist_id = (row["id"] if isinstance(row, sqlite3.Row) else row[0]) or ""
         artist_name = (row["name"] if isinstance(row, sqlite3.Row) else row[1]) or ""
+        last_checked = (
+            row["last_checked_at"] if isinstance(row, sqlite3.Row) else row[2]
+        )
         artist_id = str(artist_id).strip()
         if not artist_id:
             continue
-        entries.append({"id": artist_id, "name": str(artist_name).strip()})
+        entries.append(
+            {
+                "id": artist_id,
+                "name": str(artist_name).strip(),
+                "last_checked_at": str(last_checked or "").strip(),
+            }
+        )
     return entries
 
 
@@ -613,15 +635,28 @@ def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
     _ensure_database_ready_locked()
     conn = _get_database_connection()
     try:
+        existing_rows = conn.execute(
+            "SELECT id, last_checked_at FROM artists"
+        ).fetchall()
+        preserved: Dict[str, str | None] = {}
+        for row in existing_rows:
+            raw_id = (row["id"] if isinstance(row, sqlite3.Row) else row[0]) or ""
+            key = str(raw_id).strip()
+            if not key:
+                continue
+            value = row["last_checked_at"] if isinstance(row, sqlite3.Row) else row[1]
+            preserved[key] = value
+
         conn.execute("DELETE FROM artists")
         for entry in entries:
             artist_id = str(entry.get("id", "")).strip()
             if not artist_id:
                 continue
             artist_name = str(entry.get("name", "")).strip()
+            last_checked = preserved.get(artist_id)
             conn.execute(
-                "INSERT INTO artists (id, name) VALUES (?, ?)",
-                (artist_id, artist_name),
+                "INSERT INTO artists (id, name, last_checked_at) VALUES (?, ?, ?)",
+                (artist_id, artist_name, last_checked),
             )
         conn.commit()
     finally:
@@ -1717,8 +1752,8 @@ def read_entries(kind: str) -> List[Dict[str, str]]:
             return _read_artist_entries_locked()
 
     table_mapping: Dict[str, Tuple[str, Tuple[str, ...]]] = {
-        "album": ("albums", ("id", "title", "artist")),
-        "track": ("tracks", ("id", "title", "artist", "album")),
+        "album": ("albums", ("id", "title", "artist", "last_checked_at")),
+        "track": ("tracks", ("id", "title", "artist", "album", "last_checked_at")),
     }
     if kind not in table_mapping:
         return []
@@ -2788,12 +2823,21 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
                 if isinstance(entry, dict):
                     entry_id = (entry.get("id") or "").strip()
+                    last_checked_raw = str(entry.get("last_checked_at") or "").strip()
+                    last_checked_label = last_checked_raw or "Never"
+                    separator = " &bull; "
                     if kind == "artist":
-                        artist_name = (entry.get("name") or "").strip() or entry_id
+                        artist_name = (entry.get("name") or "").strip()
                         primary_text = artist_name or entry_id
+                        secondary_parts: List[str] = []
                         if entry_id:
+                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
+                        secondary_parts.append(
+                            f"Last checked: {html.escape(last_checked_label)}"
+                        )
+                        if secondary_parts:
                             secondary_html = (
-                                f'<span class="entry-secondary">ID: {html.escape(entry_id)}</span>'
+                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
                             )
                     elif kind == "album":
                         title = (entry.get("title") or "").strip()
@@ -2804,19 +2848,22 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                             secondary_parts.append(f"Artist: {html.escape(artist_name)}")
                         if entry_id:
                             secondary_parts.append(f"ID: {html.escape(entry_id)}")
+                        secondary_parts.append(
+                            f"Last checked: {html.escape(last_checked_label)}"
+                        )
                         if secondary_parts:
                             secondary_html = (
-                                f'<span class="entry-secondary">{' · '.join(secondary_parts)}</span>'
+                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
                             )
                     elif kind == "track":
                         title = (entry.get("title") or "").strip()
                         artist_name = (entry.get("artist") or "").strip()
                         album_title = (entry.get("album") or "").strip()
                         primary_text = title or entry_id
-                        secondary_parts = []
+                        secondary_parts: List[str] = []
                         if artist_name and album_title:
                             secondary_parts.append(
-                                f"{html.escape(artist_name)} – {html.escape(album_title)}"
+                                f"{html.escape(artist_name)} - {html.escape(album_title)}"
                             )
                         elif artist_name:
                             secondary_parts.append(html.escape(artist_name))
@@ -2824,9 +2871,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                             secondary_parts.append(html.escape(album_title))
                         if entry_id:
                             secondary_parts.append(f"ID: {html.escape(entry_id)}")
+                        secondary_parts.append(
+                            f"Last checked: {html.escape(last_checked_label)}"
+                        )
                         if secondary_parts:
                             secondary_html = (
-                                f'<span class="entry-secondary">{' · '.join(secondary_parts)}</span>'
+                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
                             )
                     else:  # pragma: no cover - unexpected dict entry
                         primary_text = str(entry)

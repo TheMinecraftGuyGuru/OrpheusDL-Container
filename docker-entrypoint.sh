@@ -32,14 +32,16 @@ conn.executescript(
     CREATE TABLE IF NOT EXISTS artists (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS albums (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
         artist TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tracks (
@@ -47,105 +49,176 @@ conn.executescript(
         title TEXT NOT NULL DEFAULT '',
         artist TEXT NOT NULL DEFAULT '',
         album TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at TEXT
     );
     """
 )
+
+def ensure_last_checked_column(connection, table_name):
+    columns = {row[1] for row in connection.execute(f'PRAGMA table_info({table_name})')}
+    if 'last_checked_at' not in columns:
+        connection.execute(f'ALTER TABLE {table_name} ADD COLUMN last_checked_at TEXT')
+
+for table_name in ('artists', 'albums', 'tracks'):
+    ensure_last_checked_column(conn, table_name)
+
 conn.commit()
 
 conn.close()
 PY
 
-process_list() {
-    local kind="$1"
-
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-
-        if [ -z "$line" ] || [[ "$line" == \#* ]]; then
-            continue
-        fi
-
-        echo "[lists] running download for $kind: $line"
-        local retry_delay="${MUSIXMATCH_CAPTCHA_RETRY_DELAY:-60}"
-        if ! [[ "$retry_delay" =~ ^[0-9]+$ ]]; then
-            retry_delay=60
-        fi
-        local captcha_marker="musixmatch --> Captcha error could not be solved"
-        local captcha_url="https://apic.musixmatch.com/captcha.html?callback_url=mxm://captcha"
-        while true; do
-            local tmp_file
-            tmp_file="$(mktemp)"
-            if python3 -u orpheus.py download qobuz "$kind" "$line" 2>&1 | tee "$tmp_file"; then
-                rm -f "$tmp_file"
-                break
-            fi
-            if grep -Fq "$captcha_marker" "$tmp_file"; then
-                echo "[lists] musixmatch captcha detected for $kind entry: $line" >&2
-                echo "[lists] open $captcha_url to solve the captcha; retrying in ${retry_delay}s" >&2
-                rm -f "$tmp_file"
-                sleep "$retry_delay"
-                continue
-            fi
-            echo "[lists] command failed for $kind entry: $line" >&2
-            rm -f "$tmp_file"
-            break
-        done
-    done < <(python3 - "$lists_db" "$kind" <<'PY'
+fetch_next_queue_entry() {
+    python3 - "$lists_db" <<'PY'
 import sqlite3
 import sys
 from pathlib import Path
 
 db_path = Path(sys.argv[1])
-kind = sys.argv[2]
+if not db_path.exists():
+    sys.exit(0)
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+try:
+    query = """
+    SELECT kind, id FROM (
+        SELECT 'artist' AS kind, id, last_checked_at, created_at, rowid FROM artists
+        UNION ALL
+        SELECT 'album' AS kind, id, last_checked_at, created_at, rowid FROM albums
+        UNION ALL
+        SELECT 'track' AS kind, id, last_checked_at, created_at, rowid FROM tracks
+    )
+    WHERE id IS NOT NULL
+      AND TRIM(id) != ''
+      AND SUBSTR(LTRIM(id), 1, 1) != '#'
+    ORDER BY (last_checked_at IS NOT NULL), last_checked_at, created_at, rowid
+    LIMIT 1
+    """
+    row = conn.execute(query).fetchone()
+finally:
+    conn.close()
+
+if row:
+    kind = row["kind"] if isinstance(row, sqlite3.Row) else row[0]
+    identifier = row["id"] if isinstance(row, sqlite3.Row) else row[1]
+    text = str(identifier or "").strip()
+    if text:
+        print(f"{kind}|{text}")
+PY
+}
+
+update_last_checked_timestamp() {
+    local kind="$1"
+    local identifier="$2"
+
+    python3 - "$lists_db" "$kind" "$identifier" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path = Path(sys.argv[1])
+kind = sys.argv[2].strip().lower()
+identifier = sys.argv[3].strip()
 valid = {"artist", "album", "track"}
-if kind not in valid:
+if kind not in valid or not identifier:
     sys.exit(0)
 
 table = kind + "s"
 conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
 try:
-    query = f"SELECT id FROM {table} ORDER BY created_at, rowid"
-    for row in conn.execute(query):
-        value = (row["id"] if isinstance(row, sqlite3.Row) else row[0]) or ""
-        value = str(value).strip()
-        if not value or value.startswith("#"):
-            continue
-        print(value)
+    conn.execute(
+        f"UPDATE {table} SET last_checked_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (identifier,),
+    )
+    conn.commit()
 finally:
     conn.close()
 PY
-    )
 }
 
-seconds_until_midnight() {
-    python3 - <<'PY'
-from datetime import datetime, timedelta
+run_download_job() {
+    local kind="$1"
+    local identifier="$2"
 
-now = datetime.now()
-target = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-seconds = int((target - now).total_seconds())
-print(seconds if seconds > 0 else 0)
-PY
-}
+    echo "[lists] running download for $kind: $identifier"
+    local retry_delay="${MUSIXMATCH_CAPTCHA_RETRY_DELAY:-60}"
+    if ! [[ "$retry_delay" =~ ^[0-9]+$ ]]; then
+        retry_delay=60
+    fi
+    local captcha_marker="musixmatch --> Captcha error could not be solved"
+    local captcha_url="https://apic.musixmatch.com/captcha.html?callback_url=mxm://captcha"
 
-run_daily_jobs() {
     while true; do
-        wait_seconds="$(seconds_until_midnight)"
-        if [ -z "$wait_seconds" ] || ! [[ "$wait_seconds" =~ ^[0-9]+$ ]]; then
-            wait_seconds=60
+        local tmp_file
+        tmp_file="$(mktemp)"
+        if python3 -u orpheus.py download qobuz "$kind" "$identifier" 2>&1 | tee "$tmp_file"; then
+            rm -f "$tmp_file"
+            return 0
         fi
-        echo "[scheduler] sleeping $wait_seconds seconds until midnight"
-        sleep "$wait_seconds"
-        process_list "artist"
-        for kind in album track; do
-            process_list "$kind"
-        done
+        if grep -Fq "$captcha_marker" "$tmp_file"; then
+            echo "[lists] musixmatch captcha detected for $kind entry: $identifier" >&2
+            echo "[lists] open $captcha_url to solve the captcha; retrying in ${retry_delay}s" >&2
+            rm -f "$tmp_file"
+            sleep "$retry_delay"
+            continue
+        fi
+        echo "[lists] command failed for $kind entry: $identifier" >&2
+        rm -f "$tmp_file"
+        return 1
     done
 }
 
+run_continuous_scheduler() {
+    local idle_sleep="${LISTS_SCHEDULER_IDLE_SLEEP:-60}"
+    if ! [[ "$idle_sleep" =~ ^[0-9]+$ ]]; then
+        idle_sleep=60
+    fi
+    local between_sleep="${LISTS_SCHEDULER_INTERVAL:-5}"
+    if ! [[ "$between_sleep" =~ ^[0-9]+$ ]]; then
+        between_sleep=5
+    fi
+
+    local idle_logged=0
+
+    while true; do
+        local entry
+        entry="$(fetch_next_queue_entry)"
+
+        if [ -z "$entry" ]; then
+            if [ "$idle_logged" -eq 0 ]; then
+                echo "[scheduler] no entries ready; sleeping ${idle_sleep}s"
+            fi
+            idle_logged=1
+            sleep "$idle_sleep"
+            continue
+        fi
+
+        idle_logged=0
+
+        local kind identifier
+        IFS='|' read -r kind identifier <<< "$entry"
+        kind="${kind,,}"
+        identifier="${identifier#"${identifier%%[![:space:]]*}"}"
+        identifier="${identifier%"${identifier##*[![:space:]]}"}"
+
+        if [ -z "$kind" ] || [ -z "$identifier" ]; then
+            sleep "$idle_sleep"
+            continue
+        fi
+
+        if ! run_download_job "$kind" "$identifier"; then
+            echo "[scheduler] download failed for $kind entry: $identifier" >&2
+        fi
+
+        update_last_checked_timestamp "$kind" "$identifier"
+
+        if [ "$between_sleep" -gt 0 ]; then
+            echo "[scheduler] sleeping ${between_sleep}s before next check"
+            sleep "$between_sleep"
+        fi
+    done
+}
 
 python3 <<'PY'
 import json
@@ -215,7 +288,7 @@ if [ "${#cmd[@]}" -eq 0 ]; then
     python3 -u /app/list_ui_server.py &
     web_pid=$!
     trap 'kill "$web_pid" 2>/dev/null || true' EXIT INT TERM
-    run_daily_jobs
+    run_continuous_scheduler
     exit 0
 fi
 if [ "${cmd[0]:-}" = "orpheusdl" ]; then
