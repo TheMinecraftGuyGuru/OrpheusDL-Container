@@ -1,6 +1,32 @@
 #!/bin/bash
 set -euo pipefail
 
+notify_discord() {
+    if [ -z "${DISCORD_WEBHOOK_URL:-${DISCORD_WEBHOOK:-}}" ]; then
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local level="${1:-info}"
+    local event="${2:-entrypoint_event}"
+    local message="${3:-}"
+    shift 3 || true
+
+    if [ -z "$message" ]; then
+        return 0
+    fi
+
+    local args=("--level" "$level" "--event" "$event" "--message" "$message")
+    while [ "$#" -gt 0 ]; do
+        args+=("--detail" "$1")
+        shift
+    done
+
+    python3 -m notifications "${args[@]}" >/dev/null 2>&1 || true
+}
+
 if [ -n "${LISTS_DB_PATH:-}" ]; then
     lists_db="$LISTS_DB_PATH"
 elif [ -n "${LISTS_DB:-}" ]; then
@@ -14,6 +40,8 @@ elif [ -n "${LISTS_DIR:-}" ]; then
 else
     lists_db="/data/orpheusdl-container.db"
 fi
+
+notify_discord "info" "entrypoint_initialised" "Entrypoint initialised" "db_path=$lists_db"
 
 mkdir -p "$(dirname -- "$lists_db")"
 
@@ -153,17 +181,36 @@ run_download_job() {
         local tmp_file
         tmp_file="$(mktemp)"
         if python3 -u orpheus.py download qobuz "$kind" "$identifier" 2>&1 | tee "$tmp_file"; then
+            notify_discord \
+                "success" \
+                "scheduler_download_completed" \
+                "Scheduler download completed" \
+                "kind=$kind" \
+                "id=$identifier"
             rm -f "$tmp_file"
             return 0
         fi
         if grep -Fq "$captcha_marker" "$tmp_file"; then
             echo "[lists] musixmatch captcha detected for $kind entry: $identifier" >&2
             echo "[lists] open $captcha_url to solve the captcha; retrying in ${retry_delay}s" >&2
+            notify_discord \
+                "warning" \
+                "musixmatch_captcha" \
+                "Musixmatch captcha required" \
+                "kind=$kind" \
+                "id=$identifier" \
+                "retry=${retry_delay}s"
             rm -f "$tmp_file"
             sleep "$retry_delay"
             continue
         fi
         echo "[lists] command failed for $kind entry: $identifier" >&2
+        notify_discord \
+            "error" \
+            "scheduler_download_failed" \
+            "Scheduler download failed" \
+            "kind=$kind" \
+            "id=$identifier"
         rm -f "$tmp_file"
         return 1
     done
@@ -288,6 +335,7 @@ if [ "${#cmd[@]}" -eq 0 ]; then
     python3 -u /app/list_ui_server.py &
     web_pid=$!
     trap 'kill "$web_pid" 2>/dev/null || true' EXIT INT TERM
+    notify_discord "info" "scheduler_started" "Continuous scheduler started"
     run_continuous_scheduler
     exit 0
 fi
