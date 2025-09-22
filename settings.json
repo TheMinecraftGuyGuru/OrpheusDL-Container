@@ -6,14 +6,14 @@
             "search_limit": 10
         },
         "artist_downloading": {
-            "return_credited_albums": true,
-            "separate_tracks_skip_downloaded": false
+            "return_credited_albums": false,
+            "separate_tracks_skip_downloaded": true
         },
         "formatting": {
             "album_format": "{name}{explicit} {quality}",
             "playlist_format": "{name}{explicit}",
             "track_filename_format": "{track_number}. {name}{explicit} {sample_rate} {bit_depth}",
-            "single_full_path_format": "{name}{explicit} {sample_rate} {bit_depth}",
+            "single_full_path_format": "{name}{explicit}",
             "enable_zfill": true,
             "force_album_format": true
         },
@@ -22,7 +22,7 @@
             "spatial_codecs": true
         },
         "module_defaults": {
-            "lyrics": "default",
+            "lyrics": "musixmatch",
             "covers": "default",
             "credits": "default"
         },
@@ -63,19 +63,21 @@
             "disable_subscription_checks": false,
             "enable_undesirable_conversions": false,
             "ignore_existing_files": false,
-            "ignore_different_artists": true
+            "ignore_different_artists": false
         }
     },
     "extensions": {},
     "modules": {
+        "musixmatch": {
+            "token_limit": 10,
+            "lyrics_format": "enhanced",
+            "custom_time_decimals": false
+        },
         "qobuz": {
             "app_id": "",
             "app_secret": "",
             "quality_format": "{sample_rate}kHz {bit_depth}bit",
             "username": "",
-            "password": "",
-            "user_id": "",
-            "token": ""
+            "password": ""
         }
     }
-}
