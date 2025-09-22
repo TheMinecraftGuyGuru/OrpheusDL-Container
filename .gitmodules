@@ -7,3 +7,7 @@
 [submodule "external/orpheusdl-musixmatch"]
 	path = external/orpheusdl-musixmatch
 	url = https://github.com/OrfiDev/orpheusdl-musixmatch.git
+
+[submodule "external/orpheusdl-applemusic-basic"]
+	path = external/orpheusdl-applemusic-basic
+	url = https://github.com/OrfiDev/orpheusdl-applemusic-basic.git
