@@ -29,9 +29,10 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 RUN git config --global --add safe.directory /app \
     && git -C /app submodule update --init --recursive
 
-# Install OrpheusDL Python dependencies inside the image
+# Install OrpheusDL core and bundled module Python dependencies inside the image
 RUN pip3 install --no-cache-dir --upgrade pip --break-system-packages \
-    && pip3 install --no-cache-dir --break-system-packages -r /app/external/orpheusdl/requirements.txt
+    && pip3 install --no-cache-dir --break-system-packages -r /app/external/orpheusdl/requirements.txt \
+    && pip3 install --no-cache-dir --break-system-packages xmltodict
 
 # Copy OrpheusDL core and modules into expected container locations
 RUN mkdir -p /orpheusdl/modules/qobuz /orpheusdl/modules/musixmatch /orpheusdl/modules/applemusic \
