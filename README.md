@@ -82,7 +82,7 @@ Lowercase variants of the Qobuz credential variables are also detected by the en
 Mount the following directories to keep your library and queue between container restarts:
 
 - `/data/music` – downloaded releases.
-- `/data/lists` – SQLite database containing artist/album/track lists. Legacy `.txt` or `artists.csv` data is **not** imported automatically; migrate any historical lists manually before switching.
+- `/data/lists` – SQLite database containing artist/album/track lists.
 - `/data/photos` – optional storage for artwork uploaded through the UI.
 
 ## Building the image locally

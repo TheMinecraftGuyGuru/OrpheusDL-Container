@@ -14,10 +14,11 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import unicodedata
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, quote, unquote
 
 import requests
@@ -26,6 +27,27 @@ LIST_LABELS: Dict[str, str] = {
     "artist": "Artists",
     "album": "Albums",
     "track": "Tracks",
+}
+
+AUDIO_FILE_EXTENSIONS = {
+    ".flac",
+    ".mp3",
+    ".aac",
+    ".m4a",
+    ".m4b",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".aiff",
+    ".aif",
+    ".alac",
+    ".dsf",
+    ".dff",
+    ".wv",
+    ".ape",
+    ".wma",
+    ".mka",
+    ".mp2",
 }
 
 ARTIST_SEARCH_SECTION = """
@@ -312,7 +334,9 @@ SEARCH_SCRIPT = """
           title: dataset.title || '',
           artist: dataset.artist || '',
           value: dataset.value || '',
-          lookup: dataset.lookup || ''
+          lookup: dataset.lookup || '',
+          image: dataset.image || '',
+          photo: dataset.photo || ''
         };
       },
       renderItem(item, escapeHtml) {
@@ -322,8 +346,12 @@ SEARCH_SCRIPT = """
         const lookup = escapeHtml(item.lookup || '');
         const value = escapeHtml(item.value || '');
         const id = escapeHtml(item.id || '');
-        const photo = typeof item.image === 'string' ? item.image.trim() : '';
-        const safeImage = photo ? escapeHtml(photo) : '';
+        const cached = typeof item.photo === 'string' ? item.photo.trim() : '';
+        const remote = typeof item.image === 'string' ? item.image.trim() : '';
+        const imageSource = cached || remote;
+        const safeImage = imageSource ? escapeHtml(imageSource) : '';
+        const safeRemote = remote ? escapeHtml(remote) : '';
+        const safeCached = cached ? escapeHtml(cached) : '';
         const altBase = item.title || item.value || 'Album';
         const altText = escapeHtml(String(altBase) + ' cover');
         const imageHtml = safeImage
@@ -342,7 +370,7 @@ SEARCH_SCRIPT = """
           '<div class="search-primary">' + primary + '</div>' +
           secondary +
           '</div>' +
-          '<button type="button" class="button success" data-select-type="album" data-id="' + id + '" data-title="' + title + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '<button type="button" class="button success" data-select-type="album" data-id="' + id + '" data-title="' + title + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '" data-image="' + safeRemote + '" data-photo="' + safeCached + '">Add</button>' +
           '</li>'
         );
       }
@@ -377,7 +405,10 @@ SEARCH_SCRIPT = """
           album: dataset.album || '',
           artist: dataset.artist || '',
           value: dataset.value || '',
-          lookup: dataset.lookup || ''
+          lookup: dataset.lookup || '',
+          album_id: dataset.albumId || '',
+          image: dataset.image || '',
+          photo: dataset.photo || ''
         };
       },
       renderItem(item, escapeHtml) {
@@ -387,8 +418,13 @@ SEARCH_SCRIPT = """
         const value = escapeHtml(item.value || '');
         const lookup = escapeHtml(item.lookup || '');
         const id = escapeHtml(item.id || '');
-        const art = typeof item.image === 'string' ? item.image.trim() : '';
-        const safeImage = art ? escapeHtml(art) : '';
+        const cached = typeof item.photo === 'string' ? item.photo.trim() : '';
+        const remote = typeof item.image === 'string' ? item.image.trim() : '';
+        const imageSource = cached || remote;
+        const safeImage = imageSource ? escapeHtml(imageSource) : '';
+        const safeRemote = remote ? escapeHtml(remote) : '';
+        const safeCached = cached ? escapeHtml(cached) : '';
+        const albumId = escapeHtml(item.album_id || '');
         const altBase = item.title || item.value || 'Track';
         const altText = escapeHtml(String(altBase) + ' cover');
         const imageHtml = safeImage
@@ -407,7 +443,7 @@ SEARCH_SCRIPT = """
           '<div class="search-primary">' + primary + '</div>' +
           secondary +
           '</div>' +
-          '<button type="button" class="button success" data-select-type="track" data-id="' + id + '" data-title="' + title + '" data-album="' + album + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '<button type="button" class="button success" data-select-type="track" data-id="' + id + '" data-title="' + title + '" data-album="' + album + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '" data-album-id="' + albumId + '" data-image="' + safeRemote + '" data-photo="' + safeCached + '">Add</button>' +
           '</li>'
         );
       }
@@ -655,12 +691,328 @@ def _normalize_photo_identifier(identifier: str) -> Optional[str]:
     return normalized
 
 
+def _normalize_name_for_match(value: str) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = "".join(
+        ch for ch in normalized if not unicodedata.combining(ch)
+    )
+    lowered = normalized.casefold()
+    return "".join(ch for ch in lowered if ch.isalnum())
+
+
+def _name_matches(candidate: str, pattern: str) -> bool:
+    candidate_norm = _normalize_name_for_match(candidate)
+    pattern_norm = _normalize_name_for_match(pattern)
+    if not candidate_norm or not pattern_norm:
+        return False
+    return pattern_norm in candidate_norm
+
+
+def _is_within_music_dir(path: Path) -> bool:
+    try:
+        base = MUSIC_DIR.resolve(strict=False)
+        target = path.resolve(strict=False)
+    except Exception:
+        return False
+
+    try:
+        target.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def _candidate_artist_directories(artist_name: str) -> List[Path]:
+    directories: List[Path] = []
+    try:
+        if not MUSIC_DIR.exists():
+            return []
+        for child in MUSIC_DIR.iterdir():
+            if not child.is_dir():
+                continue
+            if not artist_name:
+                directories.append(child)
+            elif _name_matches(child.name, artist_name):
+                directories.append(child)
+        direct = MUSIC_DIR / artist_name
+        if direct.is_dir() and direct not in directories:
+            directories.append(direct)
+    except OSError as exc:
+        logging.debug("Failed to enumerate artist directories: %s", exc)
+    return directories
+
+
+def _find_album_directories(artist_name: str, album_title: str) -> List[Path]:
+    matches: List[Path] = []
+    if not album_title:
+        return matches
+
+    seen: set[str] = set()
+
+    def add_candidate(path: Path) -> None:
+        try:
+            resolved = str(path.resolve(strict=False))
+        except Exception:
+            resolved = str(path)
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        matches.append(path)
+
+    candidates = _candidate_artist_directories(artist_name)
+    if not candidates:
+        candidates = [MUSIC_DIR]
+
+    for directory in candidates:
+        if not directory.exists() or not directory.is_dir():
+            continue
+        try:
+            for child in directory.iterdir():
+                if not child.is_dir():
+                    continue
+                if _name_matches(child.name, album_title):
+                    add_candidate(child)
+        except OSError as exc:
+            logging.debug(
+                "Failed to inspect contents of %s while searching for album %r: %s.",
+                directory,
+                album_title,
+                exc,
+            )
+
+    return matches
+
+
+def _find_track_files(album_directory: Path, track_title: str) -> List[Path]:
+    matches: List[Path] = []
+    if not track_title or not album_directory.exists():
+        return matches
+
+    normalized_track = _normalize_name_for_match(track_title)
+    if not normalized_track:
+        return matches
+
+    try:
+        for path in album_directory.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in AUDIO_FILE_EXTENSIONS:
+                continue
+            stem_norm = _normalize_name_for_match(path.stem)
+            if not stem_norm:
+                continue
+            if normalized_track in stem_norm:
+                matches.append(path)
+    except OSError as exc:
+        logging.debug(
+            "Failed to search for track %r inside %s: %s.",
+            track_title,
+            album_directory,
+            exc,
+        )
+
+    return matches
+
+
+def _album_has_audio_files(album_directory: Path) -> bool:
+    try:
+        for path in album_directory.rglob("*"):
+            if path.is_file() and path.suffix.lower() in AUDIO_FILE_EXTENSIONS:
+                return True
+    except OSError as exc:
+        logging.debug(
+            "Failed to inspect album directory %s for remaining audio files: %s.",
+            album_directory,
+            exc,
+        )
+    return False
+
+
+def _remove_album_media(
+    artist_name: str, album_title: str
+) -> Tuple[bool, List[Tuple[str, bool]]]:
+    messages: List[Tuple[str, bool]] = []
+    album_dirs = _find_album_directories(artist_name, album_title)
+    if not album_dirs:
+        return True, messages
+
+    if len(album_dirs) > 1:
+        message = (
+            f"Multiple album folders matched '{album_title}'. "
+            "Remove the correct folder manually."
+        )
+        logging.warning(
+            "Skipping automatic deletion for album %r because multiple directories were found: %s.",
+            album_title,
+            album_dirs,
+        )
+        messages.append((message, True))
+        return False, messages
+
+    album_dir = album_dirs[0]
+    if not _is_within_music_dir(album_dir):
+        logging.warning(
+            "Refusing to delete album directory outside of music base: %s.",
+            album_dir,
+        )
+        messages.append(
+            (
+                f"Refused to delete album folder at {album_dir} because it is outside the music directory.",
+                True,
+            )
+        )
+        return False, messages
+
+    try:
+        shutil.rmtree(album_dir)
+        logging.info(
+            "Deleted album directory for %r at %s.",
+            album_title,
+            album_dir,
+        )
+    except FileNotFoundError:
+        logging.debug(
+            "Album directory already missing for %r at %s.",
+            album_title,
+            album_dir,
+        )
+    except Exception as exc:  # pragma: no cover - filesystem failure
+        logging.warning(
+            "Failed to delete album directory for %r at %s: %s.",
+            album_title,
+            album_dir,
+            exc,
+        )
+        messages.append(
+            (
+                f"Failed to delete album folder for '{album_title}': {exc}",
+                True,
+            )
+        )
+        return False, messages
+
+    return True, messages
+
+
+def _remove_track_media(
+    artist_name: str, album_title: str, track_title: str
+) -> Tuple[bool, List[Tuple[str, bool]]]:
+    messages: List[Tuple[str, bool]] = []
+    album_dirs = _find_album_directories(artist_name, album_title)
+    if not album_dirs:
+        return True, messages
+
+    if len(album_dirs) > 1:
+        message = (
+            f"Multiple album folders matched '{album_title}'. Track removal was skipped."
+        )
+        logging.warning(
+            "Skipping track deletion for %r because multiple album directories were found: %s.",
+            track_title,
+            album_dirs,
+        )
+        messages.append((message, True))
+        return False, messages
+
+    album_dir = album_dirs[0]
+    if not _is_within_music_dir(album_dir):
+        logging.warning(
+            "Refusing to delete track because album directory is outside music base: %s.",
+            album_dir,
+        )
+        messages.append(
+            (
+                f"Refused to delete tracks from {album_dir} because it is outside the music directory.",
+                True,
+            )
+        )
+        return False, messages
+
+    track_files = _find_track_files(album_dir, track_title)
+    if not track_files:
+        logging.debug(
+            "Track %r not found under album directory %s.",
+            track_title,
+            album_dir,
+        )
+        return True, messages
+
+    if len(track_files) > 1:
+        message = (
+            f"Multiple files matched track '{track_title}'. Track removal was skipped."
+        )
+        logging.warning(
+            "Skipping deletion for track %r because multiple files were found: %s.",
+            track_title,
+            track_files,
+        )
+        messages.append((message, True))
+        return False, messages
+
+    track_path = track_files[0]
+    try:
+        track_path.unlink()
+        logging.info("Deleted track file %s for %r.", track_path, track_title)
+    except FileNotFoundError:
+        logging.debug(
+            "Track file already missing for %r at %s.",
+            track_title,
+            track_path,
+        )
+    except Exception as exc:  # pragma: no cover - filesystem failure
+        logging.warning(
+            "Failed to delete track file %s for %r: %s.",
+            track_path,
+            track_title,
+            exc,
+        )
+        messages.append(
+            (
+                f"Failed to delete track file for '{track_title}': {exc}",
+                True,
+            )
+        )
+        return False, messages
+
+    if not _album_has_audio_files(album_dir):
+        try:
+            shutil.rmtree(album_dir)
+            logging.info(
+                "Removed empty album directory %s after deleting track %r.",
+                album_dir,
+                track_title,
+            )
+        except FileNotFoundError:
+            logging.debug(
+                "Album directory %s already missing after deleting track %r.",
+                album_dir,
+                track_title,
+            )
+        except Exception as exc:
+            logging.warning(
+                "Failed to remove empty album directory %s after deleting track %r: %s.",
+                album_dir,
+                track_title,
+                exc,
+            )
+            messages.append(
+                (
+                    f"Track '{track_title}' was removed but the album folder could not be deleted: {exc}",
+                    True,
+                )
+            )
+
+    return True, messages
+
+
 def _photo_file_path(identifier: str) -> Path:
     return PHOTOS_DIR / identifier
 
 
-def _cached_artist_photo_url(artist_id: str) -> str:
-    normalized = _normalize_photo_identifier(artist_id)
+def _cached_photo_url(identifier: str) -> str:
+    normalized = _normalize_photo_identifier(identifier)
     if not normalized:
         return ""
 
@@ -671,12 +1023,12 @@ def _cached_artist_photo_url(artist_id: str) -> str:
     return ""
 
 
-def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
-    normalized = _normalize_photo_identifier(artist_id)
+def _ensure_cached_photo(identifier: str, image_url: str | None) -> str:
+    normalized = _normalize_photo_identifier(identifier)
     if not normalized:
         return ""
 
-    existing = _cached_artist_photo_url(normalized)
+    existing = _cached_photo_url(normalized)
     if existing:
         return existing
 
@@ -688,7 +1040,7 @@ def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
         response.raise_for_status()
     except requests.RequestException as exc:
         logging.warning(
-            "Failed to download artist photo for %s from %s: %s.",
+            "Failed to download photo for %s from %s: %s.",
             normalized,
             image_url,
             exc,
@@ -697,7 +1049,7 @@ def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
 
     data = response.content
     if not data:
-        logging.debug("Artist photo response for %s was empty.", normalized)
+        logging.debug("Photo response for %s was empty.", normalized)
         return ""
 
     path = _photo_file_path(normalized)
@@ -722,7 +1074,7 @@ def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
             temp_path.replace(path)
         except OSError as exc:
             logging.warning(
-                "Failed to store artist photo for %s: %s.",
+                "Failed to store photo for %s: %s.",
                 normalized,
                 exc,
             )
@@ -732,8 +1084,47 @@ def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
                 pass
             return ""
 
-    logging.debug("Cached artist photo for %s at %s.", normalized, path)
+    logging.debug("Cached photo for %s at %s.", normalized, path)
     return f"/photos/{quote(normalized, safe='')}"
+
+
+def _artist_photo_key(artist_id: str) -> Optional[str]:
+    return _normalize_photo_identifier(artist_id)
+
+
+def _album_photo_key(album_id: str) -> Optional[str]:
+    normalized = _normalize_photo_identifier(album_id)
+    if not normalized:
+        return None
+    return _normalize_photo_identifier(f"album_{normalized}")
+
+
+def _cached_artist_photo_url(artist_id: str) -> str:
+    key = _artist_photo_key(artist_id)
+    if not key:
+        return ""
+    return _cached_photo_url(key)
+
+
+def _cached_album_photo_url(album_id: str) -> str:
+    key = _album_photo_key(album_id)
+    if not key:
+        return ""
+    return _cached_photo_url(key)
+
+
+def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
+    key = _artist_photo_key(artist_id)
+    if not key:
+        return ""
+    return _ensure_cached_photo(key, image_url)
+
+
+def _ensure_album_photo(album_id: str, image_url: str | None) -> str:
+    key = _album_photo_key(album_id)
+    if not key:
+        return ""
+    return _ensure_cached_photo(key, image_url)
 
 
 def purge_cached_photos() -> int:
@@ -757,6 +1148,147 @@ def purge_cached_photos() -> int:
         return removed
 
 
+def download_missing_photos() -> Tuple[int, int, List[Tuple[str, bool]]]:
+    ensure_lists_exist()
+
+    try:
+        session = _get_qobuz_client()
+    except RuntimeError:
+        raise
+
+    messages: List[Tuple[str, bool]] = []
+    downloaded_artists = 0
+    downloaded_albums = 0
+    processed_albums: Set[str] = set()
+
+    artists = read_entries("artist")
+    for entry in artists:
+        artist_id = (entry.get("id") or "").strip()
+        if not artist_id or _cached_artist_photo_url(artist_id):
+            continue
+        artist_label = (entry.get("name") or "").strip() or artist_id
+
+        try:
+            data = session.get_artist(artist_id)
+        except Exception as exc:  # pragma: no cover - network failure
+            logging.warning(
+                "Failed to load artist details for %s: %s.",
+                artist_id,
+                exc,
+            )
+            messages.append((f"Failed to fetch artist '{artist_label}': {exc}", True))
+            continue
+
+        image_url = _pick_first_url(
+            data.get("image"),
+            data.get("images"),
+            data.get("picture"),
+            data.get("artist_picture"),
+            data.get("artist_picture_url"),
+        )
+
+        cached = _ensure_artist_photo(artist_id, image_url)
+        if cached:
+            downloaded_artists += 1
+        else:
+            messages.append(
+                (f"No image available for artist '{artist_label}'.", False)
+            )
+
+    albums = read_entries("album")
+    for entry in albums:
+        album_id = (entry.get("id") or "").strip()
+        if not album_id:
+            continue
+        processed_albums.add(album_id)
+        if _cached_album_photo_url(album_id):
+            continue
+        album_title = (entry.get("title") or "").strip() or album_id
+
+        try:
+            data = session.get_album(album_id)
+        except Exception as exc:  # pragma: no cover - network failure
+            logging.warning(
+                "Failed to load album details for %s: %s.",
+                album_id,
+                exc,
+            )
+            messages.append((f"Failed to fetch album '{album_title}': {exc}", True))
+            continue
+
+        image_url = _pick_first_url(
+            data.get("image"),
+            data.get("images"),
+            data.get("cover"),
+            data.get("picture"),
+            (data.get("album") or {}).get("image"),
+            (data.get("album") or {}).get("cover"),
+        )
+
+        cached = _ensure_album_photo(album_id, image_url)
+        if cached:
+            downloaded_albums += 1
+        else:
+            messages.append(
+                (f"No cover available for album '{album_title}'.", False)
+            )
+
+    tracks = read_entries("track")
+    for entry in tracks:
+        track_id = (entry.get("id") or "").strip()
+        if not track_id:
+            continue
+
+        try:
+            data = session.get_track(track_id)
+        except Exception as exc:  # pragma: no cover - network failure
+            logging.warning(
+                "Failed to load track details for %s: %s.",
+                track_id,
+                exc,
+            )
+            track_label = (entry.get("title") or "").strip() or track_id
+            messages.append((f"Failed to fetch track '{track_label}': {exc}", True))
+            continue
+
+        album_info = data.get("album")
+        if not isinstance(album_info, dict):
+            continue
+
+        raw_album_id = album_info.get("id")
+        if not raw_album_id:
+            continue
+
+        album_id = str(raw_album_id)
+        if album_id in processed_albums:
+            continue
+        processed_albums.add(album_id)
+
+        album_title = _pick_first_str(album_info.get("title"), album_info.get("name")) or album_id
+        if _cached_album_photo_url(album_id):
+            continue
+
+        image_url = _pick_first_url(
+            album_info.get("image"),
+            album_info.get("images"),
+            album_info.get("cover"),
+            album_info.get("picture"),
+            data.get("image"),
+            data.get("cover"),
+        )
+
+        cached = _ensure_album_photo(album_id, image_url)
+        if cached:
+            downloaded_albums += 1
+        else:
+            messages.append(
+                (
+                    f"No cover available for album '{album_title}' linked to track '{entry.get('title') or track_id}'.",
+                    False,
+                )
+            )
+
+    return downloaded_artists, downloaded_albums, messages
 def _pick_first_url(*candidates: Any) -> str:
     for candidate in candidates:
         if isinstance(candidate, str):
@@ -1049,6 +1581,8 @@ def _qobuz_album_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             item.get("picture"),
         )
 
+        cached_url = _ensure_album_photo(str(album_id), image_url)
+
         results.append(
             {
                 "id": str(album_id),
@@ -1058,6 +1592,7 @@ def _qobuz_album_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                 "value": value,
                 "lookup": lookup,
                 "image": image_url,
+                "photo": cached_url,
             }
         )
 
@@ -1116,6 +1651,14 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             album_data.get("picture") if album_data else None,
         )
 
+        album_id = ""
+        if isinstance(album_data, dict):
+            raw_album_id = album_data.get("id")
+            if raw_album_id:
+                album_id = str(raw_album_id)
+
+        cached_url = _ensure_album_photo(album_id, image_url) if album_id else ""
+
         results.append(
             {
                 "id": str(track_id),
@@ -1125,6 +1668,8 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                 "value": value,
                 "lookup": lookup,
                 "image": image_url,
+                "photo": cached_url,
+                "album_id": album_id,
             }
         )
 
@@ -1414,58 +1959,121 @@ def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
     if kind not in LIST_LABELS:
         return False, "Unknown list type."
 
-    removed_label: str = ""
-    removed_artist_name: str | None = None
+    if kind == "artist":
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                row = conn.execute(
+                    "SELECT rowid AS rid, id, name FROM artists ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return False, "Entry not found."
 
-    with _lock:
-        _ensure_database_ready_locked()
-        conn = _get_database_connection()
-        try:
-            if kind == "artist":
-                row = conn.execute(
-                    "SELECT id, name FROM artists ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
-                    (index,),
-                ).fetchone()
-                if row is None:
-                    return False, "Entry not found."
-                artist_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
-                artist_name = ((row["name"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
-                conn.execute("DELETE FROM artists WHERE id = ?", (artist_id,))
-                conn.commit()
-                removed_artist_name = artist_name
-                removed_label = artist_name or artist_id
-            elif kind == "album":
-                row = conn.execute(
-                    "SELECT id, title FROM albums ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
-                    (index,),
-                ).fetchone()
-                if row is None:
-                    return False, "Entry not found."
-                album_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
-                title = ((row["title"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
-                conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
-                conn.commit()
-                removed_label = title or album_id
-            elif kind == "track":
-                row = conn.execute(
-                    "SELECT id, title FROM tracks ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
-                    (index,),
-                ).fetchone()
-                if row is None:
-                    return False, "Entry not found."
-                track_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
-                title = ((row["title"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
-                conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
-                conn.commit()
-                removed_label = title or track_id
-            else:  # pragma: no cover - unsupported kind
-                return False, "Entry not found."
-        finally:
-            conn.close()
+        artist_rowid = ((row["rid"] if isinstance(row, sqlite3.Row) else row[0]) or 0)
+        artist_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+        artist_name = ((row["name"] if isinstance(row, sqlite3.Row) else row[2]) or "").strip()
 
-    if kind == "artist" and removed_artist_name:
-        _delete_artist_directory(removed_artist_name)
-    return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                conn.execute("DELETE FROM artists WHERE rowid = ?", (artist_rowid,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        if artist_name:
+            _delete_artist_directory(artist_name)
+
+        removed_label = artist_name or artist_id
+        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+
+    if kind == "album":
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                row = conn.execute(
+                    "SELECT rowid AS rid, id, title, artist FROM albums ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return False, "Entry not found."
+
+        album_rowid = ((row["rid"] if isinstance(row, sqlite3.Row) else row[0]) or 0)
+        album_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+        album_title = ((row["title"] if isinstance(row, sqlite3.Row) else row[2]) or "").strip()
+        album_artist = ((row["artist"] if isinstance(row, sqlite3.Row) else row[3]) or "").strip()
+
+        can_remove, messages = _remove_album_media(album_artist, album_title)
+        primary_message = ""
+        for text, is_error in messages:
+            _enqueue_async_message(text, is_error)
+            if not primary_message:
+                primary_message = text
+        if not can_remove:
+            return False, primary_message or "Album media removal skipped."
+
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                conn.execute("DELETE FROM albums WHERE rowid = ?", (album_rowid,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        removed_label = album_title or album_id
+        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+
+    if kind == "track":
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                row = conn.execute(
+                    "SELECT rowid AS rid, id, title, artist, album FROM tracks ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if row is None:
+            return False, "Entry not found."
+
+        track_rowid = ((row["rid"] if isinstance(row, sqlite3.Row) else row[0]) or 0)
+        track_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+        track_title = ((row["title"] if isinstance(row, sqlite3.Row) else row[2]) or "").strip()
+        track_artist = ((row["artist"] if isinstance(row, sqlite3.Row) else row[3]) or "").strip()
+        track_album = ((row["album"] if isinstance(row, sqlite3.Row) else row[4]) or "").strip()
+
+        can_remove, messages = _remove_track_media(track_artist, track_album, track_title)
+        primary_message = ""
+        for text, is_error in messages:
+            _enqueue_async_message(text, is_error)
+            if not primary_message:
+                primary_message = text
+        if not can_remove:
+            return False, primary_message or "Track removal skipped."
+
+        with _lock:
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                conn.execute("DELETE FROM tracks WHERE rowid = ?", (track_rowid,))
+                conn.commit()
+            finally:
+                conn.close()
+
+        removed_label = track_title or track_id
+        return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
+
+    return False, "Entry not found."
 
 
 def normalize_kind(raw: str | None) -> str | None:
@@ -1557,13 +2165,15 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
         data = {k: v[0] for k, v in parse_qs(payload).items() if v}
 
+        if parsed.path == "/download-photos":
+            self.handle_download_photos(data)
+            return
+
         if parsed.path == "/purge-photos":
             self.handle_purge_photos(data)
             return
 
-        if parsed.path == "/add":
-            self.handle_add(data)
-        elif parsed.path == "/delete":
+        if parsed.path == "/delete":
             self.handle_delete(data)
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
@@ -1852,6 +2462,8 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         album_title = data.get("title", "").strip()
         album_artist = data.get("artist", "").strip()
         stored_value = data.get("value", "").strip()
+        album_photo = data.get("photo", "").strip()
+        album_image = data.get("image", "").strip()
 
         logging.info(
             "Received album selection from %s with id=%r title=%r artist=%r.",
@@ -1872,6 +2484,9 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             return
 
         label_value = album_title or stored_value or album_id
+
+        if album_id:
+            _ensure_album_photo(album_id, album_photo or album_image)
 
         success, add_message = add_entry(
             "album",
@@ -1948,6 +2563,9 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         album_title = data.get("album", "").strip()
         artist_name = data.get("artist", "").strip()
         stored_value = data.get("value", "").strip()
+        album_id = data.get("album_id", "").strip()
+        album_photo = data.get("photo", "").strip()
+        album_image = data.get("image", "").strip()
 
         logging.info(
             "Received track selection from %s with id=%r title=%r album=%r artist=%r.",
@@ -1969,6 +2587,9 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             return
 
         label_value = track_title or stored_value or track_id
+
+        if album_id:
+            _ensure_album_photo(album_id, album_photo or album_image)
 
         success, add_message = add_entry(
             "track",
@@ -2016,36 +2637,44 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             message = "No cached photos found."
         self.redirect_home(message, is_error=False, selected=selected)
 
-    def handle_add(self, data: Dict[str, str]) -> None:
-        kind = normalize_kind(data.get("list"))
-        value = data.get("value", "").strip()
-        label = data.get("label", "").strip()
-        selected = normalize_kind(data.get("selected"))
-        if not kind:
-            self.redirect_home("Unknown list type.", is_error=True)
+    def handle_download_photos(self, data: Dict[str, str]) -> None:
+        selected = normalize_kind(data.get("selected")) or "artist"
+        try:
+            artist_count, album_count, extra_messages = download_missing_photos()
+        except RuntimeError as exc:
+            logging.warning(
+                "Download images request from %s failed: %s.",
+                self.address_string(),
+                exc,
+            )
+            self.redirect_home(str(exc), is_error=True, selected=selected)
             return
-        if not selected:
-            selected = kind
-        if kind == "artist":
-            success, message = add_entry(
-                kind,
-                value,
-                display_name=label or value,
+
+        for text, is_error in extra_messages:
+            _enqueue_async_message(text, is_error)
+
+        parts: List[str] = []
+        if artist_count:
+            parts.append(
+                f"{artist_count} artist photo{'s' if artist_count != 1 else ''}"
             )
+        if album_count:
+            parts.append(
+                f"{album_count} album cover{'s' if album_count != 1 else ''}"
+            )
+
+        if parts:
+            message = "Downloaded " + " and ".join(parts) + "."
         else:
-            success, message = add_entry(
-                kind,
-                value,
-                display_name=label or value,
-            )
-        if success:
-            if label and kind != "artist":
-                message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
-            if kind == "artist":
-                _trigger_artist_download(value)
-            else:
-                _trigger_luckysearch(kind, value)
-        self.redirect_home(message, is_error=not success, selected=selected)
+            message = "No missing images were found."
+
+        logging.info(
+            "Download images request from %s completed: %s artist photo(s), %s album cover(s).",
+            self.address_string(),
+            artist_count,
+            album_count,
+        )
+        self.redirect_home(message, is_error=False, selected=selected)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
@@ -2156,19 +2785,43 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                     primary_text = str(entry)
 
                 entry_primary = html.escape(primary_text)
-                row_items.append(
-                    ''.join(
+                alt_label = primary_text or entry_id or LIST_LABELS[kind][:-1]
+                image_html = ""
+                image_url = ""
+                alt_suffix = ""
+                if kind == "artist" and entry_id:
+                    image_url = _cached_artist_photo_url(entry_id)
+                    alt_suffix = "photo"
+                elif kind == "album" and entry_id:
+                    image_url = _cached_album_photo_url(entry_id)
+                    alt_suffix = "cover"
+
+                if image_url:
+                    alt_text = " ".join(part for part in [alt_label, alt_suffix] if part).strip()
+                    if not alt_text:
+                        alt_text = alt_suffix or LIST_LABELS[kind][:-1]
+                    image_html = ''.join(
                         [
-                            '<li class="entry">',
-                            '<div class="entry-text">',
-                            f'<span class="entry-primary">{entry_primary}</span>',
-                            secondary_html,
+                            '<div class="entry-thumb">',
+                            f'<img src="{html.escape(image_url)}" alt="{html.escape(alt_text)}" loading="lazy">',
                             '</div>',
-                            remove_form,
-                            '</li>',
                         ]
                     )
+
+                row_parts = ['<li class="entry">']
+                if image_html:
+                    row_parts.append(image_html)
+                row_parts.extend(
+                    [
+                        '<div class="entry-text">',
+                        f'<span class="entry-primary">{entry_primary}</span>',
+                        secondary_html,
+                        '</div>',
+                        remove_form,
+                        '</li>',
+                    ]
                 )
+                row_items.append(''.join(row_parts))
 
             rows_html = (
                 '\n'.join(row_items)
@@ -2176,48 +2829,23 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 else '<li class=\"empty\">No entries yet.</li>'
             )
 
-            placeholder = f'Add new {kind}'
-            label_text = LIST_LABELS[kind][:-1]
-            if kind == 'artist':
-                label_text = 'Artist ID'
-                placeholder = 'Add artist ID'
-            elif kind == 'album':
-                label_text = 'Album ID'
-                placeholder = 'Add album ID'
-            elif kind == 'track':
-                label_text = 'Track ID'
-                placeholder = 'Add track ID'
-
-            add_form = ''.join(
-                [
-                    '<form method="post" action="/add" class="add-form">',
-                    f'<input type="hidden" name="list" value="{kind}">',
-                    f'<input type="hidden" name="selected" value="{kind}">',
-                    '<div class="input-group">',
-                    f'<span class="field-label">{html.escape(label_text)}</span>',
-                    f'<input type="text" name="value" placeholder="{html.escape(placeholder)}" required>',
-                    '</div>',
-                    '<button type="submit" class="button primary">Add</button>',
-                    '</form>',
-                ]
-            )
-
             active_class = ' active' if kind == normalized_selected else ''
+            search_block = ''
+            if kind == 'artist':
+                search_block = ARTIST_SEARCH_SECTION
+            elif kind == 'album':
+                search_block = ALBUM_SEARCH_SECTION
+            elif kind == 'track':
+                search_block = TRACK_SEARCH_SECTION
+
             section_parts = [
                 f'<section class="list-section{active_class}" data-list="{kind}">',
                 '<div class="section-header">',
                 f'<h2>{html.escape(label)}</h2>',
                 '</div>',
+                search_block,
                 f'<ul class="entry-list">{rows_html}</ul>',
-                add_form,
             ]
-
-            if kind == 'artist':
-                section_parts.append(ARTIST_SEARCH_SECTION)
-            elif kind == 'album':
-                section_parts.append(ALBUM_SEARCH_SECTION)
-            elif kind == 'track':
-                section_parts.append(TRACK_SEARCH_SECTION)
 
             section_parts.append('</section>')
             sections.append(''.join(section_parts))
@@ -2243,9 +2871,13 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '<span class="list-switcher-label">Show list</span>',
                 f'<select id="list-selector" name="list-selector">{options_html}</select>',
                 '</label>',
+                '<form method="post" action="/download-photos" class="inline-form download-form">',
+                f'<input type="hidden" name="selected" value="{escaped_selected}">',
+                '<button type="submit" class="button secondary">Download Images</button>',
+                '</form>',
                 '<form method="post" action="/purge-photos" class="inline-form purge-form">',
                 f'<input type="hidden" name="selected" value="{escaped_selected}">',
-                '<button type="submit" class="button warning">Purge Photos</button>',
+                '<button type="submit" class="button warning">Purge Images</button>',
                 '</form>',
                 '</div>',
             ]
@@ -2270,7 +2902,9 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '.section-header{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;}',
                 '.section-header h2{margin:0;font-size:clamp(1.35rem,1.5vw+1rem,1.8rem);}',
                 '.entry-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
-                '.entry{display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;padding:0.9rem 1rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;}',
+                '.entry{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.9rem 1rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;}',
+                '.entry-thumb{flex:0 0 auto;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#1b2539;display:flex;align-items:center;justify-content:center;}',
+                '.entry-thumb img{width:100%;height:100%;object-fit:cover;display:block;}',
                 '.entry-text{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
                 '.entry-primary{font-weight:600;word-break:break-word;}',
                 '.entry-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
@@ -2282,12 +2916,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '.button.success{background:#1bbf72;color:#04120a;}',
                 '.button.warning{background:#f0ad4e;color:#2b1a00;}',
                 '.button.danger{background:#d9534f;}',
-                '.add-form{margin-top:1.25rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;}',
+                '.button.secondary{background:#3c4fa3;}',
                 '.input-group{display:flex;flex-direction:column;gap:0.35rem;width:100%;flex:1;}',
                 '.field-label{font-size:0.85rem;color:#8d99bd;text-transform:uppercase;letter-spacing:0.05em;}',
-                '.add-form input[type=text],.search-form input[type=search],.search-form input[type=text]{background:#0b1320;border:1px solid #2c3a55;border-radius:6px;padding:0.55rem 0.75rem;color:#f4f6ff;font-size:1rem;width:100%;}',
-                '.add-form input[type=text]:focus,.search-form input[type=search]:focus,.search-form input[type=text]:focus{outline:2px solid #2f89fc;outline-offset:0;border-color:#2f89fc;}',
-                '.search-block{margin-top:1.5rem;display:flex;flex-direction:column;gap:0.9rem;}',
+                '.search-form input[type=search],.search-form input[type=text]{background:#0b1320;border:1px solid #2c3a55;border-radius:6px;padding:0.55rem 0.75rem;color:#f4f6ff;font-size:1rem;width:100%;}',
+                '.search-form input[type=search]:focus,.search-form input[type=text]:focus{outline:2px solid #2f89fc;outline-offset:0;border-color:#2f89fc;}',
+                '.search-block{margin:0 0 1.25rem;display:flex;flex-direction:column;gap:0.9rem;}',
                 '.search-form{display:flex;flex-direction:column;gap:0.9rem;}',
                 '.search-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));}',
                 '.search-actions{display:flex;justify-content:flex-end;}',
@@ -2301,7 +2935,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '.search-thumb img{width:100%;height:100%;object-fit:cover;display:block;}',
                 '.search-result .button{align-self:center;}',
                 '.empty{color:#8d99bd;font-style:italic;padding:0.5rem 0;}',
-                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.inline-form{width:100%;}.inline-form .button{width:100%;}.add-form{flex-direction:column;align-items:stretch;}.add-form .button{width:100%;}.search-result{flex-direction:column;align-items:stretch;}.search-thumb{width:100%;height:auto;max-height:220px;}.search-thumb img{width:100%;height:auto;}.search-result .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
+                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.entry-thumb{width:100%;height:auto;max-height:220px;}.entry-thumb img{width:100%;height:auto;}.inline-form{width:100%;}.inline-form .button{width:100%;}.search-result{flex-direction:column;align-items:stretch;}.search-thumb{width:100%;height:auto;max-height:220px;}.search-thumb img{width:100%;height:auto;}.search-result .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
             ]
         )
 
