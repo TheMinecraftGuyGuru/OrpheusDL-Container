@@ -27,6 +27,7 @@ docker run --rm \
   -e QOBUZ_APP_SECRET=your_app_secret \
   -e QOBUZ_USER_ID=your_user_id \
   -e QOBUZ_TOKEN=your_user_token \
+  -e APPLE_MUSIC_USER_TOKEN=your_apple_music_user_token \
   -e DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # optional notifications \
   ghcr.io/theminecraftguyguru/orpheusdl-container:latest
 ```
@@ -66,6 +67,7 @@ services:
 | `QOBUZ_APP_SECRET` | Yes | Qobuz application secret. | Also accepts `APP_SECRET` or lowercase variants. |
 | `QOBUZ_USER_ID` | Yes | Qobuz user ID; mirrored into the legacy username field. | Also accepts `USER_ID` or lowercase variants. |
 | `QOBUZ_TOKEN` | Yes | Qobuz user authentication token; mirrored into the legacy password field. | Also accepts `QOBUZ_USER_AUTH_TOKEN`, `QOBUZ_AUTH_TOKEN`, `TOKEN`, or `USER_AUTH_TOKEN` (case-insensitive). |
+| `APPLE_MUSIC_USER_TOKEN` | Yes (for Apple Music features) | Apple Music user token consumed by the bundled Apple Music module. | Also accepts `APPLE_USER_TOKEN` or `APPLE_MUSIC_TOKEN`. |
 | `LISTS_WEB_PORT` | No (default `8080`) | Port exposed by `list_ui_server.py`. Update the host mapping in your runtime configuration when you change this value. | |
 | `LISTS_WEB_HOST` | No (default `0.0.0.0`) | Interface bound by the web UI. | |
 | `LISTS_WEB_LOG_LEVEL` | No (default `INFO`) | Logging level used by the list UI (e.g., `DEBUG`, `INFO`, `WARNING`). | |

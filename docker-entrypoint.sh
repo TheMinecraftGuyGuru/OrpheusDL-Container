@@ -274,7 +274,7 @@ from pathlib import Path
 
 settings_path = Path('/app/settings.json')
 target_path = Path('/orpheusdl/config/settings.json')
-ENV_MAPPING = {
+QOBUZ_ENV_MAPPING = {
     'app_id': ('QOBUZ_APP_ID', 'APP_ID', 'app_id'),
     'app_secret': ('QOBUZ_APP_SECRET', 'APP_SECRET', 'app_secret'),
     'user_id': ('QOBUZ_USER_ID', 'USER_ID', 'user_id'),
@@ -288,7 +288,11 @@ ENV_MAPPING = {
         'token',
     ),
 }
-
+APPLE_USER_TOKEN_ENV_NAMES = (
+    'APPLE_MUSIC_USER_TOKEN',
+    'APPLE_USER_TOKEN',
+    'APPLE_MUSIC_TOKEN',
+)
 if settings_path.exists():
     target_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -298,8 +302,10 @@ if settings_path.exists():
     else:
         modules = settings.setdefault('modules', {})
         qobuz = modules.setdefault('qobuz', {})
+        applemusic = modules.setdefault('applemusic', {})
 
-        for key, env_names in ENV_MAPPING.items():
+
+        for key, env_names in QOBUZ_ENV_MAPPING.items():
             for env_name in env_names:
                 if env_name in os.environ:
                     value = os.environ[env_name]
@@ -314,6 +320,13 @@ if settings_path.exists():
         token = qobuz.get('token')
         if token is not None and qobuz.get('password') != token:
             qobuz['password'] = token
+
+        for env_name in APPLE_USER_TOKEN_ENV_NAMES:
+            if env_name in os.environ:
+                value = os.environ[env_name]
+                if applemusic.get('user_token') != value:
+                    applemusic['user_token'] = value
+                break
 
         target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
