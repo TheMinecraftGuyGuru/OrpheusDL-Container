@@ -4,6 +4,3 @@
 [submodule "external/orpheusdl"]
 	path = external/orpheusdl
 	url = https://github.com/OrfiTeam/OrpheusDL
-[submodule "external/orpheusdl-musixmatch"]
-	path = external/orpheusdl-musixmatch
-	url = https://github.com/OrfiDev/orpheusdl-musixmatch
