@@ -68,9 +68,30 @@ process_list() {
         fi
 
         echo "[lists] running download for $kind: $line"
-        if ! python3 -u orpheus.py download qobuz "$kind" "$line"; then
-            echo "[lists] command failed for $kind entry: $line" >&2
+        local retry_delay="${MUSIXMATCH_CAPTCHA_RETRY_DELAY:-60}"
+        if ! [[ "$retry_delay" =~ ^[0-9]+$ ]]; then
+            retry_delay=60
         fi
+        local captcha_marker="musixmatch --> Captcha error could not be solved"
+        local captcha_url="https://apic.musixmatch.com/captcha.html?callback_url=mxm://captcha"
+        while true; do
+            local tmp_file
+            tmp_file="$(mktemp)"
+            if python3 -u orpheus.py download qobuz "$kind" "$line" 2>&1 | tee "$tmp_file"; then
+                rm -f "$tmp_file"
+                break
+            fi
+            if grep -Fq "$captcha_marker" "$tmp_file"; then
+                echo "[lists] musixmatch captcha detected for $kind entry: $line" >&2
+                echo "[lists] open $captcha_url to solve the captcha; retrying in ${retry_delay}s" >&2
+                rm -f "$tmp_file"
+                sleep "$retry_delay"
+                continue
+            fi
+            echo "[lists] command failed for $kind entry: $line" >&2
+            rm -f "$tmp_file"
+            break
+        done
     done < <(python3 - "$lists_db" "$kind" <<'PY'
 import sqlite3
 import sys

@@ -22,6 +22,7 @@
 - Building: `docker build -t orpheusdl .` (ensure submodules are populated first or the copy steps in the Dockerfile will fail).
 - Runtime defaults: Without arguments the entrypoint now starts the list UI server (background) and runs the nightly list scheduler in the foreground; the UI is exposed on `$LISTS_WEB_PORT` (default `8080`). Override `CMD` to run custom OrpheusDL commands instead.
 - Entrypoint still exports `PYTHONUNBUFFERED=1` and rewrites OrpheusDL commands (e.g. `download`, `search`, `python3 orpheus.py`) so their stdout streams directly into `docker logs` when a command is supplied.
+- Scheduler retries Orpheus downloads when Musixmatch captcha errors occur; it waits `MUSIXMATCH_CAPTCHA_RETRY_DELAY` seconds between attempts (defaults to 60) after prompting you to solve the captcha URL before rerunning the same queue entry.
 - Configuration: Modify `settings.json` before building or mount an override at runtime to avoid baking credentials into the image.
 
 ## Known Gaps / Follow-Ups
