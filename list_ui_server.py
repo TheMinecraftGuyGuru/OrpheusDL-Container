@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import html
-import imghdr
 import importlib.util
 import json
 import logging
@@ -1327,18 +1326,21 @@ def _pick_first_url(*candidates: Any) -> str:
 
 
 def _detect_photo_mime(data: bytes) -> str:
-    kind = imghdr.what(None, data)
-    if kind == "jpeg":
+    if len(data) >= 3 and data.startswith(b"\xFF\xD8\xFF"):
         return "image/jpeg"
-    if kind == "png":
+    if len(data) >= 8 and data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
-    if kind == "gif":
+    if len(data) >= 6 and data[:6] in {b"GIF87a", b"GIF89a"}:
         return "image/gif"
-    if kind == "bmp":
+    if len(data) >= 2 and data.startswith(b"BM"):
         return "image/bmp"
-    if kind == "tiff":
+    if len(data) >= 4 and data[:4] in {b"II*\x00", b"MM\x00*"}:
         return "image/tiff"
-    if kind == "webp":
+    if (
+        len(data) >= 12
+        and data.startswith(b"RIFF")
+        and data[8:12] == b"WEBP"
+    ):
         return "image/webp"
     return "application/octet-stream"
 
