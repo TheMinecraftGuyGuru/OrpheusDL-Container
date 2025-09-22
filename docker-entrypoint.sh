@@ -3,93 +3,140 @@ set -euo pipefail
 
 lists_dir="/data/lists"
 mkdir -p "$lists_dir"
+lists_db="$lists_dir/lists.db"
 
-artist_csv="$lists_dir/artists.csv"
-legacy_artist_txt="$lists_dir/artists.txt"
-
-if [ -f "$legacy_artist_txt" ] && [ ! -e "$artist_csv" ]; then
-    migrated_count="$(python3 - "$legacy_artist_txt" "$artist_csv" <<'PY'
+python3 - "$lists_dir" <<'PY'
 import csv
+import sqlite3
 import sys
 from pathlib import Path
 
-source = Path(sys.argv[1])
-target = Path(sys.argv[2])
+lists_dir = Path(sys.argv[1])
+db_path = lists_dir / "lists.db"
+lists_dir.mkdir(parents=True, exist_ok=True)
 
-rows = []
-with source.open('r', encoding='utf-8') as handle:
-    for line in handle:
-        entry = line.strip()
-        if not entry or entry.startswith('#'):
-            continue
-        rows.append((entry, entry))
+conn = sqlite3.connect(db_path)
+conn.execute("PRAGMA foreign_keys = ON")
+conn.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS artists (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
-target.parent.mkdir(parents=True, exist_ok=True)
-with target.open('w', encoding='utf-8', newline='') as handle:
-    writer = csv.writer(handle)
-    for row in rows:
-        writer.writerow(row)
+    CREATE TABLE IF NOT EXISTS albums (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        artist TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
-print(len(rows))
+    CREATE TABLE IF NOT EXISTS tracks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        artist TEXT NOT NULL DEFAULT '',
+        album TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+)
+conn.commit()
+
+
+def migrate_artists_csv(path: Path) -> None:
+    if not path.exists():
+        return
+    migrated = 0
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if not row:
+                continue
+            artist_id = (row[0] or "").strip()
+            if not artist_id or artist_id.startswith("#"):
+                continue
+            artist_name = (row[1] or "").strip() if len(row) > 1 else artist_id
+            conn.execute(
+                "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
+                (artist_id, artist_name),
+            )
+            migrated += 1
+    conn.commit()
+    if migrated:
+        print(f"[lists] migrated legacy artists.csv with {migrated} entries", flush=True)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def migrate_artists_txt(path: Path) -> None:
+    if not path.exists():
+        return
+    migrated = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
+                (entry, entry),
+            )
+            migrated += 1
+    conn.commit()
+    if migrated:
+        print(f"[lists] migrated legacy artists.txt with {migrated} entries", flush=True)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def migrate_text_list(kind: str) -> None:
+    path = lists_dir / f"{kind}s.txt"
+    if not path.exists():
+        return
+    migrated = 0
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            if kind == "album":
+                conn.execute(
+                    "INSERT OR IGNORE INTO albums (id, title, artist) VALUES (?, ?, ?)",
+                    (entry, entry, ""),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tracks (id, title, artist, album) VALUES (?, ?, ?, ?)",
+                    (entry, entry, "", ""),
+                )
+            migrated += 1
+    conn.commit()
+    if migrated:
+        print(
+            f"[lists] migrated legacy {kind}s.txt with {migrated} entries",
+            flush=True,
+        )
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+migrate_artists_csv(lists_dir / "artists.csv")
+migrate_artists_txt(lists_dir / "artists.txt")
+for legacy in ("album", "track"):
+    migrate_text_list(legacy)
+
+conn.close()
 PY
-    )"
-    echo "[lists] migrated legacy artists.txt to artists.csv with ${migrated_count:-0} entries"
-    rm -f "$legacy_artist_txt"
-fi
-
-if [ ! -e "$artist_csv" ]; then
-    touch "$artist_csv"
-fi
-
-for list in albums tracks; do
-    file="$lists_dir/${list}.txt"
-    if [ ! -e "$file" ]; then
-        touch "$file"
-    fi
-done
 
 process_list() {
     local kind="$1"
-    local file="$2"
-    local format="${3:-text}"
-
-    [ -f "$file" ] || return 0
-
-    if [ "$format" = "csv" ]; then
-        while IFS= read -r line || [ -n "$line" ]; do
-            line="${line#"${line%%[![:space:]]*}"}"
-            line="${line%"${line##*[![:space:]]}"}"
-
-            if [ -z "$line" ]; then
-                continue
-            fi
-
-            echo "[lists] running luckysearch for $kind: $line"
-            if ! python3 -u orpheus.py luckysearch qobuz "$kind" "$line"; then
-                echo "[lists] command failed for $kind entry: $line" >&2
-            fi
-        done < <(python3 - "$file" <<'PY'
-import csv
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-if not path.exists():
-    sys.exit(0)
-
-with path.open('r', encoding='utf-8', newline='') as handle:
-    reader = csv.reader(handle)
-    for row in reader:
-        if not row:
-            continue
-        artist_id = (row[0] or '').strip()
-        if not artist_id or artist_id.startswith('#'):
-            continue
-        print(artist_id)
-PY
-        )
-        return 0
-    fi
 
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line#"${line%%[![:space:]]*}"}"
@@ -103,7 +150,32 @@ PY
         if ! python3 -u orpheus.py luckysearch qobuz "$kind" "$line"; then
             echo "[lists] command failed for $kind entry: $line" >&2
         fi
-    done < "$file"
+    done < <(python3 - "$lists_db" "$kind" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path = Path(sys.argv[1])
+kind = sys.argv[2]
+valid = {"artist", "album", "track"}
+if kind not in valid:
+    sys.exit(0)
+
+table = kind + "s"
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+try:
+    query = f"SELECT id FROM {table} ORDER BY created_at, rowid"
+    for row in conn.execute(query):
+        value = (row["id"] if isinstance(row, sqlite3.Row) else row[0]) or ""
+        value = str(value).strip()
+        if not value or value.startswith("#"):
+            continue
+        print(value)
+finally:
+    conn.close()
+PY
+    )
 }
 
 seconds_until_midnight() {
@@ -125,9 +197,9 @@ run_daily_jobs() {
         fi
         echo "[scheduler] sleeping $wait_seconds seconds until midnight"
         sleep "$wait_seconds"
-        process_list "artist" "$lists_dir/artists.csv" "csv"
+        process_list "artist"
         for kind in album track; do
-            process_list "$kind" "$lists_dir/${kind}s.txt"
+            process_list "$kind"
         done
     done
 }

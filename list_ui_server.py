@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -303,15 +304,15 @@ SEARCH_SCRIPT = """
         return joinNonEmpty([values['album-search-title'] || '', values['album-search-artist'] || '']);
       },
       buildSelectPayload(dataset) {
-        const value = dataset.value || '';
-        if (!value) {
+        const id = dataset.id || '';
+        if (!id) {
           return null;
         }
         return {
-          id: dataset.id || '',
+          id,
           title: dataset.title || '',
           artist: dataset.artist || '',
-          value,
+          value: dataset.value || '',
           lookup: dataset.lookup || ''
         };
       },
@@ -367,16 +368,16 @@ SEARCH_SCRIPT = """
         ]);
       },
       buildSelectPayload(dataset) {
-        const value = dataset.value || '';
-        if (!value) {
+        const id = dataset.id || '';
+        if (!id) {
           return null;
         }
         return {
-          id: dataset.id || '',
+          id,
           title: dataset.title || '',
           album: dataset.album || '',
           artist: dataset.artist || '',
-          value,
+          value: dataset.value || '',
           lookup: dataset.lookup || ''
         };
       },
@@ -478,42 +479,187 @@ _async_lock = threading.Lock()
 _async_messages: List[Tuple[str, bool]] = []
 _photo_lock = threading.RLock()
 
+_DB_INITIALIZED = False
 
-def _list_path(kind: str) -> Path:
-    if kind == "artist":
-        return LISTS_DIR / "artists.csv"
-    return LISTS_DIR / f"{kind}s.txt"
+
+def _database_path() -> Path:
+    return LISTS_DIR / "lists.db"
+
+
+def _get_database_connection() -> sqlite3.Connection:
+    LISTS_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_database_path(), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _create_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS artists (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS albums (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            artist TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS tracks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            artist TEXT NOT NULL DEFAULT '',
+            album TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+
+
+def _migrate_legacy_lists_locked(conn: sqlite3.Connection) -> None:
+    artist_csv = LISTS_DIR / "artists.csv"
+    if artist_csv.exists():
+        migrated = 0
+        with artist_csv.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            for row in reader:
+                if not row:
+                    continue
+                artist_id = (row[0] or "").strip()
+                if not artist_id:
+                    continue
+                artist_name = (row[1] or "").strip() if len(row) > 1 else artist_id
+                conn.execute(
+                    "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
+                    (artist_id, artist_name),
+                )
+                migrated += 1
+        if migrated:
+            logging.info(
+                "Migrated %s artist entries from legacy artists.csv to database.",
+                migrated,
+            )
+        try:
+            artist_csv.unlink()
+        except OSError:
+            logging.warning("Failed to remove legacy artists.csv file.")
+
+    legacy_artist_txt = LISTS_DIR / "artists.txt"
+    if legacy_artist_txt.exists():
+        migrated = 0
+        with legacy_artist_txt.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
+                    (entry, entry),
+                )
+                migrated += 1
+        if migrated:
+            logging.info(
+                "Migrated %s artist entries from legacy artists.txt to database.",
+                migrated,
+            )
+        try:
+            legacy_artist_txt.unlink()
+        except OSError:
+            logging.warning("Failed to remove legacy artists.txt file.")
+
+    for kind in ("album", "track"):
+        legacy_path = LISTS_DIR / f"{kind}s.txt"
+        if not legacy_path.exists():
+            continue
+        migrated = 0
+        with legacy_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                if kind == "album":
+                    conn.execute(
+                        "INSERT OR IGNORE INTO albums (id, title, artist) VALUES (?, ?, ?)",
+                        (entry, entry, ""),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tracks (id, title, artist, album) VALUES (?, ?, ?, ?)",
+                        (entry, entry, "", ""),
+                    )
+                migrated += 1
+        if migrated:
+            logging.info(
+                "Migrated %s %s entries from legacy %ss.txt to database.",
+                migrated,
+                kind,
+                kind,
+            )
+        try:
+            legacy_path.unlink()
+        except OSError:
+            logging.warning("Failed to remove legacy %ss.txt file.", kind)
+
+
+def _ensure_database_ready_locked() -> None:
+    global _DB_INITIALIZED
+    LISTS_DIR.mkdir(parents=True, exist_ok=True)
+    if _DB_INITIALIZED and _database_path().exists():
+        return
+    conn = _get_database_connection()
+    try:
+        _create_tables(conn)
+        conn.commit()
+        _migrate_legacy_lists_locked(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    _DB_INITIALIZED = True
 
 
 def _read_artist_entries_locked() -> List[Dict[str, str]]:
-    path = _list_path("artist")
-    if not path.exists():
-        return []
+    _ensure_database_ready_locked()
+    conn = _get_database_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, name FROM artists ORDER BY created_at, rowid"
+        ).fetchall()
+    finally:
+        conn.close()
 
     entries: List[Dict[str, str]] = []
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        for row in reader:
-            if not row:
-                continue
-            artist_id = row[0].strip()
-            artist_name = row[1].strip() if len(row) > 1 else ""
-            if not artist_id:
-                continue
-            entries.append({"id": artist_id, "name": artist_name})
+    for row in rows:
+        artist_id = (row["id"] if isinstance(row, sqlite3.Row) else row[0]) or ""
+        artist_name = (row["name"] if isinstance(row, sqlite3.Row) else row[1]) or ""
+        artist_id = str(artist_id).strip()
+        if not artist_id:
+            continue
+        entries.append({"id": artist_id, "name": str(artist_name).strip()})
     return entries
 
 
 def _write_artist_entries_locked(entries: List[Dict[str, str]]) -> None:
-    path = _list_path("artist")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
+    _ensure_database_ready_locked()
+    conn = _get_database_connection()
+    try:
+        conn.execute("DELETE FROM artists")
         for entry in entries:
             artist_id = str(entry.get("id", "")).strip()
             if not artist_id:
                 continue
-            writer.writerow([artist_id, str(entry.get("name", "")).strip()])
+            artist_name = str(entry.get("name", "")).strip()
+            conn.execute(
+                "INSERT INTO artists (id, name) VALUES (?, ?)",
+                (artist_id, artist_name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _delete_artist_directory(artist_name: str) -> None:
@@ -1081,46 +1227,47 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
 def ensure_lists_exist() -> None:
     LISTS_DIR.mkdir(parents=True, exist_ok=True)
     with _lock:
-        artist_path = _list_path("artist")
-        if not artist_path.exists():
-            legacy_path = LISTS_DIR / "artists.txt"
-            if legacy_path.exists():
-                legacy_entries: List[Dict[str, str]] = []
-                for line in legacy_path.read_text(encoding="utf-8").splitlines():
-                    artist_id = line.strip()
-                    if not artist_id:
-                        continue
-                    legacy_entries.append({"id": artist_id, "name": artist_id})
-                _write_artist_entries_locked(legacy_entries)
-                logging.info(
-                    "Migrated %s artist entries from legacy artists.txt to artists.csv.",
-                    len(legacy_entries),
-                )
-                try:
-                    legacy_path.unlink()
-                except OSError:
-                    logging.warning("Failed to remove legacy artists.txt file.")
-            else:
-                artist_path.parent.mkdir(parents=True, exist_ok=True)
-                artist_path.touch(exist_ok=True)
-
-        for kind in LIST_LABELS:
-            if kind == "artist":
-                continue
-            _list_path(kind).touch(exist_ok=True)
+        _ensure_database_ready_locked()
 
 
-def read_entries(kind: str) -> List[str] | List[Dict[str, str]]:
+def read_entries(kind: str) -> List[Dict[str, str]]:
+    if kind not in LIST_LABELS:
+        return []
+
     if kind == "artist":
         with _lock:
             return _read_artist_entries_locked()
 
-    path = _list_path(kind)
-    if not path.exists():
+    table_mapping: Dict[str, Tuple[str, Tuple[str, ...]]] = {
+        "album": ("albums", ("id", "title", "artist")),
+        "track": ("tracks", ("id", "title", "artist", "album")),
+    }
+    if kind not in table_mapping:
         return []
+
+    table_name, columns = table_mapping[kind]
+    query = f"SELECT {', '.join(columns)} FROM {table_name} ORDER BY created_at, rowid"
+
     with _lock:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    return [line.strip() for line in lines if line.strip()]
+        _ensure_database_ready_locked()
+        conn = _get_database_connection()
+        try:
+            rows = conn.execute(query).fetchall()
+        finally:
+            conn.close()
+
+    entries: List[Dict[str, str]] = []
+    for row in rows:
+        entry: Dict[str, str] = {}
+        for column in columns:
+            if isinstance(row, sqlite3.Row):
+                value = row[column]
+            else:  # pragma: no cover - legacy tuple rows
+                idx = columns.index(column)
+                value = row[idx]
+            entry[column] = str(value or "").strip()
+        entries.append(entry)
+    return entries
 
 
 def add_entry(
@@ -1128,30 +1275,79 @@ def add_entry(
     value: str,
     *,
     display_name: str | None = None,
+    artist_name: str | None = None,
+    album_title: str | None = None,
 ) -> Tuple[bool, str]:
     value = value.strip()
     if not value:
         return False, "Value cannot be empty."
 
+    if kind not in LIST_LABELS:
+        return False, "Unknown list type."
+
     if kind == "artist":
         artist_id = value
-        artist_name = (display_name or "").strip() or artist_id
+        artist_label = (display_name or "").strip() or artist_id
         with _lock:
-            entries = _read_artist_entries_locked()
-            if any(entry["id"] == artist_id for entry in entries):
-                return False, f"{LIST_LABELS[kind][:-1]} already present."
-            entries.append({"id": artist_id, "name": artist_name})
-            _write_artist_entries_locked(entries)
-        return True, f"Added {LIST_LABELS[kind][:-1]} '{artist_name}'."
+            _ensure_database_ready_locked()
+            conn = _get_database_connection()
+            try:
+                existing = conn.execute(
+                    "SELECT 1 FROM artists WHERE id = ?",
+                    (artist_id,),
+                ).fetchone()
+                if existing:
+                    return False, f"{LIST_LABELS[kind][:-1]} already present."
+                conn.execute(
+                    "INSERT INTO artists (id, name) VALUES (?, ?)",
+                    (artist_id, artist_label),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return True, f"Added {LIST_LABELS[kind][:-1]} '{artist_label}'."
 
-    path = _list_path(kind)
     with _lock:
-        entries = read_entries(kind)
-        if value in entries:
-            return False, f"{LIST_LABELS[kind][:-1]} already present."
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(value + "\n")
-    return True, f"Added {LIST_LABELS[kind][:-1]} '{value}'."
+        _ensure_database_ready_locked()
+        conn = _get_database_connection()
+        try:
+            if kind == "album":
+                title = (display_name or "").strip()
+                artist = (artist_name or "").strip()
+                existing = conn.execute(
+                    "SELECT 1 FROM albums WHERE id = ?",
+                    (value,),
+                ).fetchone()
+                if existing:
+                    return False, f"{LIST_LABELS[kind][:-1]} already present."
+                conn.execute(
+                    "INSERT INTO albums (id, title, artist) VALUES (?, ?, ?)",
+                    (value, title, artist),
+                )
+                conn.commit()
+                label = title or value
+            elif kind == "track":
+                title = (display_name or "").strip()
+                artist = (artist_name or "").strip()
+                album = (album_title or "").strip()
+                existing = conn.execute(
+                    "SELECT 1 FROM tracks WHERE id = ?",
+                    (value,),
+                ).fetchone()
+                if existing:
+                    return False, f"{LIST_LABELS[kind][:-1]} already present."
+                conn.execute(
+                    "INSERT INTO tracks (id, title, artist, album) VALUES (?, ?, ?, ?)",
+                    (value, title, artist, album),
+                )
+                conn.commit()
+                label = title or value
+            else:  # pragma: no cover - unsupported kind
+                return False, "Unknown list type."
+        finally:
+            conn.close()
+
+    return True, f"Added {LIST_LABELS[kind][:-1]} '{label}'."
 
 
 def sanitize_entry_value(value: str) -> str | None:
@@ -1303,36 +1499,60 @@ def _trigger_luckysearch(kind: str, value: str) -> None:
 
 
 def remove_entry(kind: str, index: int) -> Tuple[bool, str]:
-    path = _list_path(kind)
-    removed_label: str | None = None
+    if kind not in LIST_LABELS:
+        return False, "Unknown list type."
+
+    removed_label: str = ""
     removed_artist_name: str | None = None
+
     with _lock:
-        if kind == "artist":
-            entries = _read_artist_entries_locked()
-            if index < 0 or index >= len(entries):
+        _ensure_database_ready_locked()
+        conn = _get_database_connection()
+        try:
+            if kind == "artist":
+                row = conn.execute(
+                    "SELECT id, name FROM artists ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+                if row is None:
+                    return False, "Entry not found."
+                artist_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
+                artist_name = ((row["name"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+                conn.execute("DELETE FROM artists WHERE id = ?", (artist_id,))
+                conn.commit()
+                removed_artist_name = artist_name
+                removed_label = artist_name or artist_id
+            elif kind == "album":
+                row = conn.execute(
+                    "SELECT id, title FROM albums ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+                if row is None:
+                    return False, "Entry not found."
+                album_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
+                title = ((row["title"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+                conn.execute("DELETE FROM albums WHERE id = ?", (album_id,))
+                conn.commit()
+                removed_label = title or album_id
+            elif kind == "track":
+                row = conn.execute(
+                    "SELECT id, title FROM tracks ORDER BY created_at, rowid LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
+                if row is None:
+                    return False, "Entry not found."
+                track_id = ((row["id"] if isinstance(row, sqlite3.Row) else row[0]) or "").strip()
+                title = ((row["title"] if isinstance(row, sqlite3.Row) else row[1]) or "").strip()
+                conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+                conn.commit()
+                removed_label = title or track_id
+            else:  # pragma: no cover - unsupported kind
                 return False, "Entry not found."
-            removed_entry = entries.pop(index)
-            _write_artist_entries_locked(entries)
-            removed_artist_name = (removed_entry.get("name") or "").strip()
-            removed_label = (
-                removed_artist_name
-                or removed_entry.get("id")
-                or ""
-            )
-        else:
-            entries = read_entries(kind)
-            if index < 0 or index >= len(entries):
-                return False, "Entry not found."
-            removed = entries.pop(index)
-            data = "\n".join(entries)
-            if data:
-                data += "\n"
-            path.write_text(data, encoding="utf-8")
-            removed_label = removed
+        finally:
+            conn.close()
+
     if kind == "artist" and removed_artist_name:
         _delete_artist_directory(removed_artist_name)
-    if removed_label is None:
-        removed_label = ""
     return True, f"Removed {LIST_LABELS[kind][:-1]} '{removed_label}'."
 
 
@@ -1720,7 +1940,6 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         album_title = data.get("title", "").strip()
         album_artist = data.get("artist", "").strip()
         stored_value = data.get("value", "").strip()
-        lookup = data.get("lookup", "").strip()
 
         logging.info(
             "Received album selection from %s with id=%r title=%r artist=%r.",
@@ -1730,30 +1949,33 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             album_artist,
         )
 
-        if not stored_value:
-            parts = [part for part in [album_artist, album_title] if part]
-            if parts:
-                stored_value = " - ".join(parts)
-            elif album_id:
-                stored_value = album_id
+        if not album_id:
+            album_id = stored_value
 
-        if not stored_value:
+        if not album_id:
             self.send_json(
-                {"error": "Missing album details."},
+                {"error": "Missing album identifier."},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
 
-        success, add_message = add_entry("album", stored_value)
+        label_value = album_title or stored_value or album_id
+
+        success, add_message = add_entry(
+            "album",
+            album_id,
+            display_name=label_value,
+            artist_name=album_artist,
+        )
 
         if not success:
             self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
             return
 
-        logging.info("Album %s added to list: %s", stored_value, add_message)
-        _trigger_luckysearch("album", (lookup or stored_value).strip())
+        logging.info("Album %s added to list: %s", album_id, add_message)
+        _trigger_luckysearch("album", album_id)
 
-        label = album_title or stored_value
+        label = album_title or label_value
         if album_artist and album_title:
             combined_message = (
                 f"Added album '{album_title}' by {album_artist} and queued luckysearch."
@@ -1814,7 +2036,6 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         album_title = data.get("album", "").strip()
         artist_name = data.get("artist", "").strip()
         stored_value = data.get("value", "").strip()
-        lookup = data.get("lookup", "").strip()
 
         logging.info(
             "Received track selection from %s with id=%r title=%r album=%r artist=%r.",
@@ -1825,38 +2046,34 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             artist_name,
         )
 
-        if not stored_value:
-            parts = [part for part in [artist_name, track_title] if part]
-            if parts:
-                base_value = " - ".join(parts)
-            else:
-                base_value = ""
-            if base_value and album_title:
-                stored_value = f"{base_value} ({album_title})"
-            elif base_value:
-                stored_value = base_value
-            elif album_title:
-                stored_value = album_title
-            elif track_id:
-                stored_value = track_id
+        if not track_id:
+            track_id = stored_value
 
-        if not stored_value:
+        if not track_id:
             self.send_json(
-                {"error": "Missing track details."},
+                {"error": "Missing track identifier."},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return
 
-        success, add_message = add_entry("track", stored_value)
+        label_value = track_title or stored_value or track_id
+
+        success, add_message = add_entry(
+            "track",
+            track_id,
+            display_name=label_value,
+            artist_name=artist_name,
+            album_title=album_title,
+        )
 
         if not success:
             self.send_json({"error": add_message}, status=HTTPStatus.CONFLICT)
             return
 
-        logging.info("Track %s added to list: %s", stored_value, add_message)
-        _trigger_luckysearch("track", (lookup or stored_value).strip())
+        logging.info("Track %s added to list: %s", track_id, add_message)
+        _trigger_luckysearch("track", track_id)
 
-        label = track_title or stored_value
+        label = track_title or label_value
         pieces = [f"Added track '{label}'"]
         if artist_name:
             pieces.append(f"by {artist_name}")
@@ -1891,7 +2108,6 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         kind = normalize_kind(data.get("list"))
         value = data.get("value", "").strip()
         label = data.get("label", "").strip()
-        lookup = data.get("lookup", "").strip()
         selected = normalize_kind(data.get("selected"))
         if not kind:
             self.redirect_home("Unknown list type.", is_error=True)
@@ -1905,14 +2121,18 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 display_name=label or value,
             )
         else:
-            success, message = add_entry(kind, value)
+            success, message = add_entry(
+                kind,
+                value,
+                display_name=label or value,
+            )
         if success:
             if label and kind != "artist":
                 message = f"Added {LIST_LABELS[kind][:-1]} '{label}'."
             if kind == "artist":
                 _trigger_artist_download(value)
             else:
-                _trigger_luckysearch(kind, (lookup or label or value).strip())
+                _trigger_luckysearch(kind, value)
         self.redirect_home(message, is_error=not success, selected=selected)
 
     def handle_delete(self, data: Dict[str, str]) -> None:
@@ -1973,42 +2193,70 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                     ]
                 )
 
-                if kind == 'artist' and isinstance(entry, dict):
-                    artist_id = (entry.get('id') or '').strip()
-                    artist_name = (entry.get('name') or '').strip() or artist_id
-                    primary = html.escape(artist_name or artist_id)
-                    secondary_html = (
-                        f'<span class="entry-secondary">ID: {html.escape(artist_id)}</span>'
-                        if artist_id
-                        else ''
+                primary_text = ""
+                secondary_html = ""
+
+                if isinstance(entry, dict):
+                    entry_id = (entry.get("id") or "").strip()
+                    if kind == "artist":
+                        artist_name = (entry.get("name") or "").strip() or entry_id
+                        primary_text = artist_name or entry_id
+                        if entry_id:
+                            secondary_html = (
+                                f'<span class="entry-secondary">ID: {html.escape(entry_id)}</span>'
+                            )
+                    elif kind == "album":
+                        title = (entry.get("title") or "").strip()
+                        artist_name = (entry.get("artist") or "").strip()
+                        primary_text = title or entry_id
+                        secondary_parts: List[str] = []
+                        if artist_name:
+                            secondary_parts.append(f"Artist: {html.escape(artist_name)}")
+                        if entry_id:
+                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
+                        if secondary_parts:
+                            secondary_html = (
+                                f'<span class="entry-secondary">{' · '.join(secondary_parts)}</span>'
+                            )
+                    elif kind == "track":
+                        title = (entry.get("title") or "").strip()
+                        artist_name = (entry.get("artist") or "").strip()
+                        album_title = (entry.get("album") or "").strip()
+                        primary_text = title or entry_id
+                        secondary_parts = []
+                        if artist_name and album_title:
+                            secondary_parts.append(
+                                f"{html.escape(artist_name)} – {html.escape(album_title)}"
+                            )
+                        elif artist_name:
+                            secondary_parts.append(html.escape(artist_name))
+                        elif album_title:
+                            secondary_parts.append(html.escape(album_title))
+                        if entry_id:
+                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
+                        if secondary_parts:
+                            secondary_html = (
+                                f'<span class="entry-secondary">{' · '.join(secondary_parts)}</span>'
+                            )
+                    else:  # pragma: no cover - unexpected dict entry
+                        primary_text = str(entry)
+                if not primary_text:
+                    primary_text = str(entry)
+
+                entry_primary = html.escape(primary_text)
+                row_items.append(
+                    ''.join(
+                        [
+                            '<li class="entry">',
+                            '<div class="entry-text">',
+                            f'<span class="entry-primary">{entry_primary}</span>',
+                            secondary_html,
+                            '</div>',
+                            remove_form,
+                            '</li>',
+                        ]
                     )
-                    row_items.append(
-                        ''.join(
-                            [
-                                '<li class="entry">',
-                                '<div class="entry-text">',
-                                f'<span class="entry-primary">{primary}</span>',
-                                secondary_html,
-                                '</div>',
-                                remove_form,
-                                '</li>',
-                            ]
-                        )
-                    )
-                else:
-                    entry_text = html.escape(str(entry))
-                    row_items.append(
-                        ''.join(
-                            [
-                                '<li class="entry">',
-                                '<div class="entry-text">',
-                                f'<span class="entry-primary">{entry_text}</span>',
-                                '</div>',
-                                remove_form,
-                                '</li>',
-                            ]
-                        )
-                    )
+                )
 
             rows_html = (
                 '\n'.join(row_items)
@@ -2022,9 +2270,11 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 label_text = 'Artist ID'
                 placeholder = 'Add artist ID'
             elif kind == 'album':
-                placeholder = 'Add new album'
+                label_text = 'Album ID'
+                placeholder = 'Add album ID'
             elif kind == 'track':
-                placeholder = 'Add new track'
+                label_text = 'Track ID'
+                placeholder = 'Add track ID'
 
             add_form = ''.join(
                 [
