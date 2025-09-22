@@ -1,3 +1,4 @@
+AI Agents see AGENTS.md
 # OrpheusDL-Container
 
 A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) with the Qobuz provider. The entrypoint keeps the nightly list scheduler running, exposes a lightweight web UI for managing artist/album/track lists, and syncs Qobuz credentials from environment variables into the bundled `settings.json` file at startup.
