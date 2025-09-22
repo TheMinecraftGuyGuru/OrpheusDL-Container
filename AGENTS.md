@@ -13,7 +13,7 @@
 - Root directory contains infrastructure assets only:
   - `Dockerfile`: Alpine-based build that installs system packages, fetches Git submodules, installs Python dependencies from `external/orpheusdl/requirements.txt`, copies the OrpheusDL core and Qobuz module into `/orpheusdl`, and sets a Bash entrypoint with `/orpheusdl` as the working directory.
   - `settings.json`: Default OrpheusDL configuration bundled into the image. It defines download paths/quality, formatting rules, lyrics & cover behaviour, playlist preferences, codec conversion options, and placeholder Qobuz credentials (empty strings by default).
-  - `list_ui_server.py`: Lightweight HTTP UI for inspecting and editing the artists/albums/tracks list files; listens on `$LISTS_WEB_PORT` (default `8080`) and serialises file writes with an internal lock.
+  - `list_ui_server.py`: Lightweight HTTP UI for inspecting and editing the artists/albums/tracks queue stored in the `/data/orpheusdl-container.db` SQLite database; listens on `$LISTS_WEB_PORT` (default `8080`) and serialises writes with an internal lock.
   - `README.md`: Currently only contains the project title—add setup or usage instructions here if you gather them.
   - `.gitmodules`: Declares the `external/orpheusdl` and `external/orpheusdl-qobuz` submodules; the directories exist but are empty unless initialised.
 - `external/`: Hosts the OrpheusDL core and Qobuz provider submodules. Run `git submodule update --init --recursive` after cloning or before building the Docker image so their contents are available.
@@ -52,14 +52,14 @@ paths are relative to the repo root unless stated otherwise.
   submodules, installs OrpheusDL Python requirements, then stages OrpheusDL and the Qobuz module
   under `/orpheusdl`. Sets `/usr/local/bin/docker-entrypoint.sh` as the entrypoint and switches the
   working directory to `/orpheusdl` for runtime.
-- `docker-entrypoint.sh`: Runtime orchestration script. Ensures list files exist, syncs Qobuz
-  credentials from environment variables into `/orpheusdl/config/settings.json`, manages default
+- `docker-entrypoint.sh`: Runtime orchestration script. Ensures the `/data/orpheusdl-container.db` SQLite database exists,
+  syncs Qobuz credentials from environment variables into `/orpheusdl/config/settings.json`, manages default
   behaviour (starts `list_ui_server.py` and a nightly scheduler when no command is supplied), and
   normalises various OrpheusDL commands to run with unbuffered Python output inside the container.
 
 ### Runtime Services & Configuration
-- `list_ui_server.py`: Threaded HTTP server for managing the artist/album/track list files. Exposes
-  a small HTML interface, serialises file access with locks, streams asynchronous status banners,
+- `list_ui_server.py`: Threaded HTTP server for managing the artist/album/track queue stored in the SQLite database. Exposes
+  a small HTML interface, serialises access with locks, streams asynchronous status banners,
   and mirrors the scheduler’s sanitisation so ad-hoc entries behave the same way.
 - `settings.json`: Default OrpheusDL configuration baked into the image. Defines download paths,
   quality settings, formatting templates, lyrics/cover behaviour, playlist options, codec

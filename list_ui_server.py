@@ -476,7 +476,21 @@ SEARCH_SCRIPT = """
 </script>
 """.strip()
 
-LISTS_DIR = Path(os.environ.get("LISTS_DIR", "/data/lists"))
+def _resolve_lists_db_path() -> Path:
+    explicit_paths = (
+        os.environ.get("LISTS_DB_PATH"),
+        os.environ.get("LISTS_DB"),
+    )
+    for value in explicit_paths:
+        if value:
+            return Path(value).expanduser()
+    legacy_dir = os.environ.get("LISTS_DIR")
+    if legacy_dir:
+        return Path(legacy_dir).expanduser() / "orpheusdl-container.db"
+    return Path("/data/orpheusdl-container.db")
+
+
+LISTS_DB_PATH = _resolve_lists_db_path()
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/data/music"))
 PHOTOS_DIR = Path(os.environ.get("LISTS_PHOTO_DIR", "/data/photos"))
 WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
@@ -518,11 +532,11 @@ _DB_INITIALIZED = False
 
 
 def _database_path() -> Path:
-    return LISTS_DIR / "lists.db"
+    return LISTS_DB_PATH
 
 
 def _get_database_connection() -> sqlite3.Connection:
-    LISTS_DIR.mkdir(parents=True, exist_ok=True)
+    LISTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(_database_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -558,7 +572,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
 
 def _ensure_database_ready_locked() -> None:
     global _DB_INITIALIZED
-    LISTS_DIR.mkdir(parents=True, exist_ok=True)
+    LISTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if _DB_INITIALIZED and _database_path().exists():
         return
     conn = _get_database_connection()
@@ -1682,7 +1696,7 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
 
 
 def ensure_lists_exist() -> None:
-    LISTS_DIR.mkdir(parents=True, exist_ok=True)
+    LISTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         _ensure_database_ready_locked()
 

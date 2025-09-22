@@ -1,18 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
-lists_dir="/data/lists"
-mkdir -p "$lists_dir"
-lists_db="$lists_dir/lists.db"
+if [ -n "${LISTS_DB_PATH:-}" ]; then
+    lists_db="$LISTS_DB_PATH"
+elif [ -n "${LISTS_DB:-}" ]; then
+    lists_db="$LISTS_DB"
+elif [ -n "${LISTS_DIR:-}" ]; then
+    lists_dir="${LISTS_DIR%/}"
+    if [ -z "$lists_dir" ]; then
+        lists_dir="$LISTS_DIR"
+    fi
+    lists_db="$lists_dir/orpheusdl-container.db"
+else
+    lists_db="/data/orpheusdl-container.db"
+fi
 
-python3 - "$lists_dir" <<'PY'
+mkdir -p "$(dirname -- "$lists_db")"
+
+python3 - "$lists_db" <<'PY'
 import sqlite3
 import sys
 from pathlib import Path
 
-lists_dir = Path(sys.argv[1])
-db_path = lists_dir / "lists.db"
-lists_dir.mkdir(parents=True, exist_ok=True)
+db_path = Path(sys.argv[1])
+db_path.parent.mkdir(parents=True, exist_ok=True)
 
 conn = sqlite3.connect(db_path)
 conn.execute("PRAGMA foreign_keys = ON")

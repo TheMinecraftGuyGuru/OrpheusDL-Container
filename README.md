@@ -6,7 +6,7 @@ A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/
 
 - Starting the image with no explicit command launches two processes:
   - `list_ui_server.py` provides a management UI bound to `$LISTS_WEB_PORT` (default `8080`).
-  - A foreground scheduler runs once a day at midnight and executes `luckysearch` downloads for every list entry in `/data/lists/lists.db`.
+  - A foreground scheduler runs once a day at midnight and executes `luckysearch` downloads for every list entry in `/data/orpheusdl-container.db`.
 - Any other command supplied to `docker run … <command>` executes through the entrypoint with Python's unbuffered mode forced so output is streamed straight into `docker logs`.
 - Override the entrypoint if you need an interactive shell: `docker run --rm -it --entrypoint bash ghcr.io/theminecraftguyguru/orpheusdl-container`.
 
@@ -20,7 +20,7 @@ The bundled web interface ships with **no authentication and no TLS/SSL support*
 docker run --rm \
   -p 8080:8080 \
   -v "$(pwd)/music:/data/music" \
-  -v "$(pwd)/lists:/data/lists" \
+  -v "$(pwd)/orpheusdl-container.db:/data/orpheusdl-container.db" \
   -e QOBUZ_APP_ID=your_app_id \
   -e QOBUZ_APP_SECRET=your_app_secret \
   -e QOBUZ_USER_ID=your_user_id \
@@ -44,7 +44,7 @@ services:
       # Optional runtime tuning
       - LISTS_WEB_PORT=8080          # change to expose the UI on a different port
       - LISTS_WEB_HOST=0.0.0.0       # bind UI to a specific interface
-      - LISTS_DIR=/data/lists        # relocate the lists database
+      - LISTS_DB_PATH=/data/orpheusdl-container.db # relocate the lists database file
       - MUSIC_DIR=/data/music        # relocate downloaded music
       - LISTS_PHOTO_DIR=/data/photos # enable cover uploads via the UI
       - LISTS_WEB_LOG_LEVEL=INFO     # adjust UI logging verbosity
@@ -52,7 +52,7 @@ services:
       - "8080:8080"
     volumes:
       - ./music:/data/music
-      - ./lists:/data/lists
+      - ./orpheusdl-container.db:/data/orpheusdl-container.db
       # Optional: surface a directory for uploaded photos/covers
       - ./photos:/data/photos
     restart: unless-stopped
@@ -70,7 +70,7 @@ services:
 | `QOBUZ_TOKEN` | Yes | Qobuz user authentication token; mirrored into the legacy password field. | Also accepts `QOBUZ_USER_AUTH_TOKEN`, `QOBUZ_AUTH_TOKEN`, `TOKEN`, or `USER_AUTH_TOKEN` (case-insensitive). |
 | `LISTS_WEB_PORT` | No (default `8080`) | Port exposed by `list_ui_server.py`. Update the host mapping in your runtime configuration when you change this value. | |
 | `LISTS_WEB_HOST` | No (default `0.0.0.0`) | Interface bound by the web UI. | |
-| `LISTS_DIR` | No (default `/data/lists`) | Location of the SQLite database that stores artist/album/track queues. | Ensure the directory is persisted via a volume. |
+| `LISTS_DB_PATH` | No (default `/data/orpheusdl-container.db`) | Path to the SQLite database that stores artist/album/track queues. | Also accepts `LISTS_DB`; legacy `LISTS_DIR` values append `/orpheusdl-container.db`. |
 | `MUSIC_DIR` | No (default `/data/music`) | Destination for downloaded audio files. | Should be a persistent volume. |
 | `LISTS_PHOTO_DIR` | No (default `/data/photos`) | Directory where the UI stores uploaded cover images. | Mount a volume if you plan to use artwork uploads. |
 | `LISTS_WEB_LOG_LEVEL` | No (default `INFO`) | Logging level used by the list UI (e.g., `DEBUG`, `INFO`, `WARNING`). | |
@@ -82,7 +82,7 @@ Lowercase variants of the Qobuz credential variables are also detected by the en
 Mount the following directories to keep your library and queue between container restarts:
 
 - `/data/music` – downloaded releases.
-- `/data/lists` – SQLite database containing artist/album/track lists.
+- `/data/orpheusdl-container.db` – SQLite database containing artist/album/track lists.
 - `/data/photos` – optional storage for artwork uploaded through the UI.
 
 ## Building the image locally

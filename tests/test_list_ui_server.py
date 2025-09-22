@@ -44,19 +44,18 @@ class DatabaseListStorageTests(unittest.TestCase):
         self.addCleanup(self._tempdir.cleanup)
 
         base_path = Path(self._tempdir.name)
-        self.lists_dir = base_path / "lists"
-        self.lists_dir.mkdir()
+        self.db_path = base_path / "orpheusdl-container.db"
 
-        self._original_lists_dir = list_ui_server.LISTS_DIR
+        self._original_lists_db_path = list_ui_server.LISTS_DB_PATH
         self._original_db_initialized = list_ui_server._DB_INITIALIZED
 
-        list_ui_server.LISTS_DIR = self.lists_dir
+        list_ui_server.LISTS_DB_PATH = self.db_path
         list_ui_server._DB_INITIALIZED = False
 
         self.addCleanup(self._restore_paths)
 
     def _restore_paths(self) -> None:
-        list_ui_server.LISTS_DIR = self._original_lists_dir
+        list_ui_server.LISTS_DB_PATH = self._original_lists_db_path
         list_ui_server._DB_INITIALIZED = self._original_db_initialized
 
     def test_add_album_stores_id_and_metadata(self) -> None:
@@ -132,21 +131,22 @@ class RemoveArtistDirectoryTests(unittest.TestCase):
         base_path = Path(self._tempdir.name)
         self.music_dir = base_path / "music"
         self.lists_dir = base_path / "lists"
+        self.db_path = self.lists_dir / "orpheusdl-container.db"
         self.music_dir.mkdir()
         self.lists_dir.mkdir()
 
         self._original_music_dir = list_ui_server.MUSIC_DIR
-        self._original_lists_dir = list_ui_server.LISTS_DIR
+        self._original_lists_db_path = list_ui_server.LISTS_DB_PATH
         self._original_db_initialized = list_ui_server._DB_INITIALIZED
         list_ui_server.MUSIC_DIR = self.music_dir
-        list_ui_server.LISTS_DIR = self.lists_dir
+        list_ui_server.LISTS_DB_PATH = self.db_path
         list_ui_server._DB_INITIALIZED = False
 
         self.addCleanup(self._restore_paths)
 
     def _restore_paths(self) -> None:
         list_ui_server.MUSIC_DIR = self._original_music_dir
-        list_ui_server.LISTS_DIR = self._original_lists_dir
+        list_ui_server.LISTS_DB_PATH = self._original_lists_db_path
         list_ui_server._DB_INITIALIZED = self._original_db_initialized
 
     def _write_artists(self, entries):
