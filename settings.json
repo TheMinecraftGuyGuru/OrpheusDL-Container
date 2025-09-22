@@ -10,10 +10,10 @@
             "separate_tracks_skip_downloaded": false
         },
         "formatting": {
-            "album_format": "{artist}/{name}{explicit} {quality}",
+            "album_format": "{name}{explicit} {quality}",
             "playlist_format": "{name}{explicit}",
             "track_filename_format": "{track_number}. {name}{explicit} {sample_rate} {bit_depth}",
-            "single_full_path_format": "{artist}/{name}{explicit} {sample_rate} {bit_depth}",
+            "single_full_path_format": "{name}{explicit} {sample_rate} {bit_depth}",
             "enable_zfill": true,
             "force_album_format": true
         },
