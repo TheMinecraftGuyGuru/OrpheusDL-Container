@@ -34,9 +34,10 @@ RUN pip3 install --no-cache-dir --upgrade pip --break-system-packages \
     && pip3 install --no-cache-dir --break-system-packages -r /app/external/orpheusdl/requirements.txt
 
 # Copy OrpheusDL core and modules into expected container locations
-RUN mkdir -p /orpheusdl/modules/qobuz \
+RUN mkdir -p /orpheusdl/modules/qobuz /orpheusdl/modules/musixmatch \
     && cp -a /app/external/orpheusdl/. /orpheusdl/ \
-    && cp -a /app/external/orpheusdl-qobuz/. /orpheusdl/modules/qobuz/
+    && cp -a /app/external/orpheusdl-qobuz/. /orpheusdl/modules/qobuz/ \
+    && cp -a /app/external/orpheusdl-musixmatch/. /orpheusdl/modules/musixmatch/
 
 # Change to the OrpheusDL directory at runtime so bundled modules are detected
 WORKDIR /orpheusdl
