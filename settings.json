@@ -22,9 +22,9 @@
             "spatial_codecs": true
         },
         "module_defaults": {
-            "lyrics": "musixmatch",
-            "covers": "default",
-            "credits": "default"
+            "lyrics": "applemusic",
+            "covers": "applemusic",
+            "credits": "applemusic"
         },
         "lyrics": {
             "embed_lyrics": true,
@@ -68,17 +68,27 @@
     },
     "extensions": {},
     "modules": {
+        "applemusic": {
+            "force_region": "us",
+            "selected_language": "en",
+            "get_original_cover": false,
+            "print_original_cover_url": false,
+            "lyrics_type": "custom",
+            "lyrics_custom_ms_sync": false,
+            "lyrics_language_override": "en",
+            "lyrics_syllable_sync": true,
+            "user_token": ""
+        },
+        "musixmatch": {
+            "token_limit": 10,
+            "lyrics_format": "enhanced",
+            "custom_time_decimals": false
+        },
         "qobuz": {
             "app_id": "",
             "app_secret": "",
             "quality_format": "{sample_rate}kHz {bit_depth}bit",
             "username": "",
             "password": ""
-        },
-        "musixmatch": {
-            "token_limit": 100,
-            "lyrics_format": "enhanced",
-            "custom_time_decimals": false
         }
     }
-}
