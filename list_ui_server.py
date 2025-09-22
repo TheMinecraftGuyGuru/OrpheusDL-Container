@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import functools
 import html
+import imghdr
 import importlib.util
 import json
 import logging
@@ -17,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, quote, unquote
 
 import requests
 
@@ -257,13 +258,31 @@ SEARCH_SCRIPT = """
         };
       },
       renderItem(item, escapeHtml) {
+        const rawId = item.id || '';
+        const rawName = item.name || '';
+        const label = rawName || rawId;
+        const safeId = escapeHtml(rawId);
+        const safeLabel = escapeHtml(label);
+        const datasetName = escapeHtml(rawName || rawId);
+        const photo = typeof item.photo === 'string' ? item.photo.trim() : '';
+        const image = typeof item.image === 'string' ? item.image.trim() : '';
+        const imageSource = photo || image;
+        const safeImage = imageSource ? escapeHtml(imageSource) : '';
+        const altText = label ? label + ' photo' : 'Artist photo';
+        const safeAlt = escapeHtml(altText);
+        const imageHtml = safeImage
+          ? '<div class="search-thumb"><img src="' + safeImage + '" alt="' + safeAlt + '" loading="lazy"></div>'
+          : '';
+        const secondary = safeId ? '<div class="search-secondary">ID: ' + safeId + '</div>' : '';
         return (
           '<li class="search-result">' +
+          imageHtml +
           '<div class="search-meta">' +
-          '<div class="search-primary">' + escapeHtml(item.name || '') + '</div>' +
-          '<div class="search-secondary">ID: ' + escapeHtml(item.id || '') + '</div>' +
+          '<div class="search-primary">' + safeLabel + '</div>' +
+          secondary +
           '</div>' +
-          '<button type="button" class="button success" data-select-type="artist" data-artist-id="' + escapeHtml(item.id || '') + '" data-artist-name="' + escapeHtml(item.name || '') + '">Add</button>' +
+          '<button type="button" class="button success" data-select-type="artist" data-artist-id="' + safeId +
+          '" data-artist-name="' + datasetName + '">Add</button>' +
           '</li>'
         );
       }
@@ -302,13 +321,28 @@ SEARCH_SCRIPT = """
         const year = escapeHtml(item.year || '');
         const lookup = escapeHtml(item.lookup || '');
         const value = escapeHtml(item.value || '');
+        const id = escapeHtml(item.id || '');
+        const photo = typeof item.image === 'string' ? item.image.trim() : '';
+        const safeImage = photo ? escapeHtml(photo) : '';
+        const altBase = item.title || item.value || 'Album';
+        const altText = escapeHtml(String(altBase) + ' cover');
+        const imageHtml = safeImage
+          ? '<div class="search-thumb"><img src="' + safeImage + '" alt="' + altText + '" loading="lazy"></div>'
+          : '';
+        const secondary =
+          '<div class="search-secondary">' +
+          (artist ? 'Artist: ' + artist : 'Artist unknown') +
+          (year ? ' · ' + year : '') +
+          '</div>';
+        const primary = title || value || escapeHtml('Unknown album');
         return (
           '<li class="search-result">' +
+          imageHtml +
           '<div class="search-meta">' +
-          '<div class="search-primary">' + title + '</div>' +
-          '<div class="search-secondary">' + (artist ? 'Artist: ' + artist : 'Artist unknown') + (year ? ' · ' + year : '') + '</div>' +
+          '<div class="search-primary">' + primary + '</div>' +
+          secondary +
           '</div>' +
-          '<button type="button" class="button success" data-select-type="album" data-id="' + escapeHtml(item.id || '') + '" data-title="' + title + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '<button type="button" class="button success" data-select-type="album" data-id="' + id + '" data-title="' + title + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
           '</li>'
         );
       }
@@ -352,16 +386,28 @@ SEARCH_SCRIPT = """
         const artist = escapeHtml(item.artist || '');
         const value = escapeHtml(item.value || '');
         const lookup = escapeHtml(item.lookup || '');
-        return (
-          '<li class="search-result">' +
-          '<div class="search-meta">' +
-          '<div class="search-primary">' + title + '</div>' +
+        const id = escapeHtml(item.id || '');
+        const art = typeof item.image === 'string' ? item.image.trim() : '';
+        const safeImage = art ? escapeHtml(art) : '';
+        const altBase = item.title || item.value || 'Track';
+        const altText = escapeHtml(String(altBase) + ' cover');
+        const imageHtml = safeImage
+          ? '<div class="search-thumb"><img src="' + safeImage + '" alt="' + altText + '" loading="lazy"></div>'
+          : '';
+        const secondary =
           '<div class="search-secondary">' +
           (artist ? 'Artist: ' + artist : 'Artist unknown') +
           (album ? ' · Album: ' + album : '') +
+          '</div>';
+        const primary = title || value || escapeHtml('Unknown track');
+        return (
+          '<li class="search-result">' +
+          imageHtml +
+          '<div class="search-meta">' +
+          '<div class="search-primary">' + primary + '</div>' +
+          secondary +
           '</div>' +
-          '</div>' +
-          '<button type="button" class="button success" data-select-type="track" data-id="' + escapeHtml(item.id || '') + '" data-title="' + title + '" data-album="' + album + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
+          '<button type="button" class="button success" data-select-type="track" data-id="' + id + '" data-title="' + title + '" data-album="' + album + '" data-artist="' + artist + '" data-value="' + value + '" data-lookup="' + lookup + '">Add</button>' +
           '</li>'
         );
       }
@@ -396,6 +442,7 @@ SEARCH_SCRIPT = """
 
 LISTS_DIR = Path(os.environ.get("LISTS_DIR", "/data/lists"))
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/data/music"))
+PHOTOS_DIR = Path(os.environ.get("LISTS_PHOTO_DIR", "/data/photos"))
 WEB_HOST = os.environ.get("LISTS_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("LISTS_WEB_PORT", "8080"))
 
@@ -429,6 +476,7 @@ _QOBUZ_ENV_MAPPING: Dict[str, Tuple[str, ...]] = {
 _lock = threading.RLock()
 _async_lock = threading.Lock()
 _async_messages: List[Tuple[str, bool]] = []
+_photo_lock = threading.RLock()
 
 
 def _list_path(kind: str) -> Path:
@@ -536,6 +584,168 @@ def _delete_artist_directory(artist_name: str) -> None:
             base_dir / artist_name,
             exc,
         )
+
+
+def _normalize_photo_identifier(identifier: str) -> Optional[str]:
+    if not identifier:
+        return None
+    normalized = str(identifier).strip()
+    if not normalized:
+        return None
+    if normalized.startswith(".") or "/" in normalized or "\\" in normalized or ".." in normalized:
+        return None
+    return normalized
+
+
+def _photo_file_path(identifier: str) -> Path:
+    return PHOTOS_DIR / identifier
+
+
+def _cached_artist_photo_url(artist_id: str) -> str:
+    normalized = _normalize_photo_identifier(artist_id)
+    if not normalized:
+        return ""
+
+    path = _photo_file_path(normalized)
+    with _photo_lock:
+        if path.exists() and path.is_file() and path.stat().st_size > 0:
+            return f"/photos/{quote(normalized, safe='')}"
+    return ""
+
+
+def _ensure_artist_photo(artist_id: str, image_url: str | None) -> str:
+    normalized = _normalize_photo_identifier(artist_id)
+    if not normalized:
+        return ""
+
+    existing = _cached_artist_photo_url(normalized)
+    if existing:
+        return existing
+
+    if not image_url:
+        return ""
+
+    try:
+        response = requests.get(str(image_url), timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logging.warning(
+            "Failed to download artist photo for %s from %s: %s.",
+            normalized,
+            image_url,
+            exc,
+        )
+        return ""
+
+    data = response.content
+    if not data:
+        logging.debug("Artist photo response for %s was empty.", normalized)
+        return ""
+
+    path = _photo_file_path(normalized)
+    with _photo_lock:
+        if path.exists() and path.is_file() and path.stat().st_size > 0:
+            return f"/photos/{quote(normalized, safe='')}"
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logging.warning(
+                "Failed to create photo directory %s: %s.",
+                path.parent,
+                exc,
+            )
+            return ""
+
+        temp_path = path.with_suffix(".tmp")
+        try:
+            with temp_path.open("wb") as handle:
+                handle.write(data)
+            temp_path.replace(path)
+        except OSError as exc:
+            logging.warning(
+                "Failed to store artist photo for %s: %s.",
+                normalized,
+                exc,
+            )
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            return ""
+
+    logging.debug("Cached artist photo for %s at %s.", normalized, path)
+    return f"/photos/{quote(normalized, safe='')}"
+
+
+def purge_cached_photos() -> int:
+    with _photo_lock:
+        if not PHOTOS_DIR.exists():
+            return 0
+
+        removed = 0
+        for child in PHOTOS_DIR.iterdir():
+            if not child.is_file():
+                continue
+            try:
+                child.unlink()
+                removed += 1
+            except OSError as exc:
+                logging.warning(
+                    "Failed to remove cached photo %s: %s.",
+                    child,
+                    exc,
+                )
+        return removed
+
+
+def _pick_first_url(*candidates: Any) -> str:
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = candidate.strip()
+            if text:
+                return text
+        elif isinstance(candidate, dict):
+            keys = (
+                "large",
+                "extralarge",
+                "extra_large",
+                "hires",
+                "medium",
+                "small",
+                "url",
+                "href",
+                "picture",
+                "cover",
+            )
+            for key in keys:
+                if key in candidate:
+                    url = _pick_first_url(candidate.get(key))
+                    if url:
+                        return url
+        elif isinstance(candidate, list):
+            for item in candidate:
+                url = _pick_first_url(item)
+                if url:
+                    return url
+    return ""
+
+
+def _detect_photo_mime(data: bytes) -> str:
+    kind = imghdr.what(None, data)
+    if kind == "jpeg":
+        return "image/jpeg"
+    if kind == "png":
+        return "image/png"
+    if kind == "gif":
+        return "image/gif"
+    if kind == "bmp":
+        return "image/bmp"
+    if kind == "tiff":
+        return "image/tiff"
+    if kind == "webp":
+        return "image/webp"
+    return "application/octet-stream"
 
 
 def _load_qobuz_api_module():
@@ -690,20 +900,21 @@ def _qobuz_artist_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
         if not artist_id or not name:
             continue
 
-        images = item.get("image") or item.get("images") or {}
-        image_url = (
-            images.get("large")
-            or images.get("extralarge")
-            or images.get("medium")
-            or images.get("small")
-            or item.get("picture")
+        artist_id_str = str(artist_id)
+        name_str = str(name)
+        image_url = _pick_first_url(
+            item.get("image"),
+            item.get("images"),
+            item.get("picture"),
         )
+        cached_url = _ensure_artist_photo(artist_id_str, image_url)
 
         results.append(
             {
-                "id": str(artist_id),
-                "name": str(name),
-                "image": str(image_url) if image_url else "",
+                "id": artist_id_str,
+                "name": name_str,
+                "image": image_url,
+                "photo": cached_url,
             }
         )
 
@@ -773,6 +984,13 @@ def _qobuz_album_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
         value = " - ".join(value_parts) if value_parts else title
         lookup = " ".join(part for part in [title, artist_name] if part) or title
 
+        image_url = _pick_first_url(
+            item.get("image"),
+            item.get("images"),
+            item.get("cover"),
+            item.get("picture"),
+        )
+
         results.append(
             {
                 "id": str(album_id),
@@ -781,6 +999,7 @@ def _qobuz_album_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                 "year": year,
                 "value": value,
                 "lookup": lookup,
+                "image": image_url,
             }
         )
 
@@ -805,7 +1024,8 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             continue
 
         title = str(title_raw).strip()
-        album_info = item.get("album") or {}
+        album_raw = item.get("album")
+        album_info = album_raw or {}
         album_title = _pick_first_str(
             album_info.get("title") if isinstance(album_info, dict) else album_info,
             item.get("album_title"),
@@ -826,6 +1046,18 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
             part for part in [title, artist_name, album_title] if part
         ) or title
 
+        album_data = album_raw if isinstance(album_raw, dict) else None
+        image_url = _pick_first_url(
+            item.get("image"),
+            item.get("images"),
+            item.get("cover"),
+            item.get("picture"),
+            album_data.get("image") if album_data else None,
+            album_data.get("images") if album_data else None,
+            album_data.get("cover") if album_data else None,
+            album_data.get("picture") if album_data else None,
+        )
+
         results.append(
             {
                 "id": str(track_id),
@@ -834,6 +1066,7 @@ def _qobuz_track_search(query: str, limit: int = 10) -> List[Dict[str, str]]:
                 "artist": artist_name,
                 "value": value,
                 "lookup": lookup,
+                "image": image_url,
             }
         )
 
@@ -1148,6 +1381,10 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             self.handle_track_search(parsed)
             return
 
+        if parsed.path.startswith("/photos/"):
+            self.handle_photo_request(parsed)
+            return
+
         if parsed.path not in {"", "/"}:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
             return
@@ -1188,12 +1425,56 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
         data = {k: v[0] for k, v in parse_qs(payload).items() if v}
 
+        if parsed.path == "/purge-photos":
+            self.handle_purge_photos(data)
+            return
+
         if parsed.path == "/add":
             self.handle_add(data)
         elif parsed.path == "/delete":
             self.handle_delete(data)
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def handle_photo_request(self, parsed) -> None:
+        identifier = parsed.path[len("/photos/"):]
+        identifier = unquote(identifier or "")
+        normalized = _normalize_photo_identifier(identifier)
+        if not normalized:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        path = _photo_file_path(normalized)
+        with _photo_lock:
+            if not path.exists() or not path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+                return
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                logging.warning(
+                    "Failed to read cached photo %s: %s.",
+                    path,
+                    exc,
+                )
+                self.send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to read cached photo.",
+                )
+                return
+
+        if not data:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        mime_type = _detect_photo_mime(data)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Disposition", "inline")
+        self.end_headers()
+        self.wfile.write(data)
 
     def handle_artist_search(self, parsed) -> None:
         params = parse_qs(parsed.query)
@@ -1596,6 +1877,16 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def handle_purge_photos(self, data: Dict[str, str]) -> None:
+        selected = normalize_kind(data.get("selected")) or "artist"
+        removed = purge_cached_photos()
+        logging.info("Photo purge requested by %s removed %s file(s).", self.address_string(), removed)
+        if removed:
+            message = f"Removed {removed} cached photo{'s' if removed != 1 else ''}."
+        else:
+            message = "No cached photos found."
+        self.redirect_home(message, is_error=False, selected=selected)
+
     def handle_add(self, data: Dict[str, str]) -> None:
         kind = normalize_kind(data.get("list"))
         value = data.get("value", "").strip()
@@ -1664,6 +1955,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         selected_kind: str,
     ) -> str:
         normalized_selected = normalize_kind(selected_kind) or "artist"
+        escaped_selected = html.escape(normalized_selected)
 
         sections: List[str] = []
         for kind, label in LIST_LABELS.items():
@@ -1789,6 +2081,10 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '<span class="list-switcher-label">Show list</span>',
                 f'<select id="list-selector" name="list-selector">{options_html}</select>',
                 '</label>',
+                '<form method="post" action="/purge-photos" class="inline-form purge-form">',
+                f'<input type="hidden" name="selected" value="{escaped_selected}">',
+                '<button type="submit" class="button warning">Purge Photos</button>',
+                '</form>',
                 '</div>',
             ]
         )
@@ -1822,6 +2118,7 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '.button:active{transform:translateY(0);}',
                 '.button.primary{background:#2f89fc;}',
                 '.button.success{background:#1bbf72;color:#04120a;}',
+                '.button.warning{background:#f0ad4e;color:#2b1a00;}',
                 '.button.danger{background:#d9534f;}',
                 '.add-form{margin-top:1.25rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;}',
                 '.input-group{display:flex;flex-direction:column;gap:0.35rem;width:100%;flex:1;}',
@@ -1834,12 +2131,15 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 '.search-actions{display:flex;justify-content:flex-end;}',
                 '.search-status{font-size:0.9rem;color:#8d99bd;display:block;}',
                 '.search-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
-                '.search-result{display:flex;align-items:flex-start;justify-content:space-between;gap:0.75rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:0.85rem 1rem;}',
+                '.search-result{display:flex;align-items:center;justify-content:space-between;gap:0.9rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:0.85rem 1rem;}',
                 '.search-meta{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
                 '.search-primary{font-weight:600;word-break:break-word;}',
                 '.search-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
+                '.search-thumb{flex:0 0 auto;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#1b2539;display:flex;align-items:center;justify-content:center;}',
+                '.search-thumb img{width:100%;height:100%;object-fit:cover;display:block;}',
+                '.search-result .button{align-self:center;}',
                 '.empty{color:#8d99bd;font-style:italic;padding:0.5rem 0;}',
-                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.inline-form{width:100%;}.inline-form .button{width:100%;}.add-form{flex-direction:column;align-items:stretch;}.add-form .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
+                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.inline-form{width:100%;}.inline-form .button{width:100%;}.add-form{flex-direction:column;align-items:stretch;}.add-form .button{width:100%;}.search-result{flex-direction:column;align-items:stretch;}.search-thumb{width:100%;height:auto;max-height:220px;}.search-thumb img{width:100%;height:auto;}.search-result .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
             ]
         )
 
