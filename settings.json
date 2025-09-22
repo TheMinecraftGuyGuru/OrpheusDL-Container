@@ -10,7 +10,7 @@
             "separate_tracks_skip_downloaded": true
         },
         "formatting": {
-            "album_format": "{name}{explicit} [{quality}]",
+            "album_format": "{artist}/{name}{explicit} {quality}",
             "playlist_format": "{name}{explicit}",
             "track_filename_format": "{track_number}. {name}{explicit} [{sample_rate}kHz {bit_depth}bit]",
             "single_full_path_format": "{artist}/{name}{explicit} [single] [{sample_rate}kHz {bit_depth}bit]/{name}{explicit} [{sample_rate}kHz {bit_depth}bit]",
