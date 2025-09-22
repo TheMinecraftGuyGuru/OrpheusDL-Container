@@ -63,7 +63,7 @@
             "disable_subscription_checks": false,
             "enable_undesirable_conversions": false,
             "ignore_existing_files": false,
-            "ignore_different_artists": false
+            "ignore_different_artists": true
         }
     },
     "extensions": {},
