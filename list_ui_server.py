@@ -2,7 +2,6 @@
 """Simple web UI for managing OrpheusDL list files."""
 from __future__ import annotations
 
-import csv
 import functools
 import html
 import imghdr
@@ -557,91 +556,6 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migrate_legacy_lists_locked(conn: sqlite3.Connection) -> None:
-    artist_csv = LISTS_DIR / "artists.csv"
-    if artist_csv.exists():
-        migrated = 0
-        with artist_csv.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.reader(handle)
-            for row in reader:
-                if not row:
-                    continue
-                artist_id = (row[0] or "").strip()
-                if not artist_id:
-                    continue
-                artist_name = (row[1] or "").strip() if len(row) > 1 else artist_id
-                conn.execute(
-                    "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
-                    (artist_id, artist_name),
-                )
-                migrated += 1
-        if migrated:
-            logging.info(
-                "Migrated %s artist entries from legacy artists.csv to database.",
-                migrated,
-            )
-        try:
-            artist_csv.unlink()
-        except OSError:
-            logging.warning("Failed to remove legacy artists.csv file.")
-
-    legacy_artist_txt = LISTS_DIR / "artists.txt"
-    if legacy_artist_txt.exists():
-        migrated = 0
-        with legacy_artist_txt.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                entry = line.strip()
-                if not entry or entry.startswith("#"):
-                    continue
-                conn.execute(
-                    "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
-                    (entry, entry),
-                )
-                migrated += 1
-        if migrated:
-            logging.info(
-                "Migrated %s artist entries from legacy artists.txt to database.",
-                migrated,
-            )
-        try:
-            legacy_artist_txt.unlink()
-        except OSError:
-            logging.warning("Failed to remove legacy artists.txt file.")
-
-    for kind in ("album", "track"):
-        legacy_path = LISTS_DIR / f"{kind}s.txt"
-        if not legacy_path.exists():
-            continue
-        migrated = 0
-        with legacy_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                entry = line.strip()
-                if not entry or entry.startswith("#"):
-                    continue
-                if kind == "album":
-                    conn.execute(
-                        "INSERT OR IGNORE INTO albums (id, title, artist) VALUES (?, ?, ?)",
-                        (entry, entry, ""),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO tracks (id, title, artist, album) VALUES (?, ?, ?, ?)",
-                        (entry, entry, "", ""),
-                    )
-                migrated += 1
-        if migrated:
-            logging.info(
-                "Migrated %s %s entries from legacy %ss.txt to database.",
-                migrated,
-                kind,
-                kind,
-            )
-        try:
-            legacy_path.unlink()
-        except OSError:
-            logging.warning("Failed to remove legacy %ss.txt file.", kind)
-
-
 def _ensure_database_ready_locked() -> None:
     global _DB_INITIALIZED
     LISTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -651,11 +565,9 @@ def _ensure_database_ready_locked() -> None:
     try:
         _create_tables(conn)
         conn.commit()
-        _migrate_legacy_lists_locked(conn)
-        conn.commit()
     finally:
         conn.close()
-    _DB_INITIALIZED = True
+        _DB_INITIALIZED = True
 
 
 def _read_artist_entries_locked() -> List[Dict[str, str]]:

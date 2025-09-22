@@ -6,7 +6,6 @@ mkdir -p "$lists_dir"
 lists_db="$lists_dir/lists.db"
 
 python3 - "$lists_dir" <<'PY'
-import csv
 import sqlite3
 import sys
 from pathlib import Path
@@ -42,95 +41,6 @@ conn.executescript(
     """
 )
 conn.commit()
-
-
-def migrate_artists_csv(path: Path) -> None:
-    if not path.exists():
-        return
-    migrated = 0
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        for row in reader:
-            if not row:
-                continue
-            artist_id = (row[0] or "").strip()
-            if not artist_id or artist_id.startswith("#"):
-                continue
-            artist_name = (row[1] or "").strip() if len(row) > 1 else artist_id
-            conn.execute(
-                "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
-                (artist_id, artist_name),
-            )
-            migrated += 1
-    conn.commit()
-    if migrated:
-        print(f"[lists] migrated legacy artists.csv with {migrated} entries", flush=True)
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-def migrate_artists_txt(path: Path) -> None:
-    if not path.exists():
-        return
-    migrated = 0
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
-            conn.execute(
-                "INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)",
-                (entry, entry),
-            )
-            migrated += 1
-    conn.commit()
-    if migrated:
-        print(f"[lists] migrated legacy artists.txt with {migrated} entries", flush=True)
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-def migrate_text_list(kind: str) -> None:
-    path = lists_dir / f"{kind}s.txt"
-    if not path.exists():
-        return
-    migrated = 0
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            entry = line.strip()
-            if not entry or entry.startswith("#"):
-                continue
-            if kind == "album":
-                conn.execute(
-                    "INSERT OR IGNORE INTO albums (id, title, artist) VALUES (?, ?, ?)",
-                    (entry, entry, ""),
-                )
-            else:
-                conn.execute(
-                    "INSERT OR IGNORE INTO tracks (id, title, artist, album) VALUES (?, ?, ?, ?)",
-                    (entry, entry, "", ""),
-                )
-            migrated += 1
-    conn.commit()
-    if migrated:
-        print(
-            f"[lists] migrated legacy {kind}s.txt with {migrated} entries",
-            flush=True,
-        )
-    try:
-        path.unlink()
-    except OSError:
-        pass
-
-
-migrate_artists_csv(lists_dir / "artists.csv")
-migrate_artists_txt(lists_dir / "artists.txt")
-for legacy in ("album", "track"):
-    migrate_text_list(legacy)
 
 conn.close()
 PY
