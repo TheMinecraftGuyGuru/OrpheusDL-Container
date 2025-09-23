@@ -32,6 +32,49 @@ docker run --rm \
   ghcr.io/theminecraftguyguru/orpheusdl-container:latest
 ```
 
+## Usage guide
+
+1. Create folders on the host to persist the SQLite database and downloaded
+   music. The quick start example above assumes `./data` for database and
+   artwork caches and `./music` for the downloaded library.
+2. Supply your Qobuz credentials with the environment variables from the
+   table below. The entrypoint copies them into `/orpheusdl/config/settings.json`
+   before OrpheusDL starts.
+3. Browse to `http://localhost:8080` (or the host/port you mapped) to open the
+   list management UI. Use the artist/album/track search panels to enqueue new
+   items. The scheduler will download them automatically using the policy
+   described in the previous section.
+4. Watch the container logs or configure Discord notifications to monitor
+   progress. Manual commands (for example `download qobuz album <id>`) can be
+   executed by supplying the command to `docker run`.
+
+### Manual command examples
+
+Run a one-off download without the background scheduler:
+
+```bash
+docker run --rm \
+  -v "$(pwd)/music:/data/music" \
+  -v "$(pwd)/data:/data" \
+  -e QOBUZ_APP_ID=... \
+  -e QOBUZ_APP_SECRET=... \
+  -e QOBUZ_USER_ID=... \
+  -e QOBUZ_TOKEN=... \
+  ghcr.io/theminecraftguyguru/orpheusdl-container:latest \
+  download qobuz album 90210
+```
+
+Start an interactive shell when you need to inspect files inside the
+container:
+
+```bash
+docker run --rm -it \
+  -v "$(pwd)/music:/data/music" \
+  -v "$(pwd)/data:/data" \
+  --entrypoint bash \
+  ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+```
+
 ## Example Docker Compose service
 
 ```yaml
@@ -76,6 +119,23 @@ services:
 | `DISCORD_WEBHOOK_URL` | No | Discord webhook that receives container notifications. | Also accepts `DISCORD_WEBHOOK`. |
 
 Lowercase variants of the Qobuz credential variables are also detected by the entrypoint.
+
+### Directory paths and volume mounts
+
+The entrypoint writes queue data to `/data/orpheusdl-container.db` by default
+and expects music under `/data/music`. Override these locations when you want to
+store data elsewhere:
+
+| Variable | Description |
+| --- | --- |
+| `LISTS_DB_PATH` | Full path to the SQLite database file inside the container. |
+| `LISTS_DB` | Deprecated alias for `LISTS_DB_PATH`. |
+| `LISTS_DIR` | Legacy directory variable used to derive `LISTS_DB_PATH`. |
+| `MUSIC_DIR` | Directory scanned by the web UI when removing artists or uploading photos. |
+
+Remember to mount the host directories that back these paths (for example,
+`-v /srv/orpheus/data:/data`). The UI will create missing folders as required
+but cannot persist data outside mounted volumes.
 
 ### Discord notifications
 

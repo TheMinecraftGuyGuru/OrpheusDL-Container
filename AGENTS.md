@@ -15,7 +15,7 @@
 - `settings.json`: Default OrpheusDL configuration bundled into the image. It defines download paths/quality, formatting rules, lyrics & cover behaviour, playlist preferences, codec conversion options, and placeholder Qobuz credentials (empty strings by default).
 - `list_ui_server.py`: Lightweight HTTP UI for inspecting and editing the artists/albums/tracks queue stored in the `/data/orpheusdl-container.db` SQLite database; listens on `$LISTS_WEB_PORT` (default `8080`) and serialises writes with an internal lock.
 - `notifications.py`: Shared utility that sends Discord webhook embeds when `$DISCORD_WEBHOOK_URL` (or `$DISCORD_WEBHOOK`) is configured.
-  - `README.md`: Currently only contains the project title; add setup or usage instructions here if you gather them.
+  - `README.md`: Documents runtime behaviour, quick start examples, usage instructions, volume mounting guidance, and environment variable reference.
   - `.gitmodules`: Declares the `external/orpheusdl`, `external/orpheusdl-qobuz`, `external/orpheusdl-musixmatch`, and `external/orpheusdl-applemusic-basic` submodules; the directories exist but are empty unless initialised.
 - `external/`: Hosts the OrpheusDL core alongside the Qobuz, Musixmatch, and Apple Music provider submodules. Run `git submodule update --init --recursive` after cloning or before building the Docker image so their contents are available.
 
@@ -33,7 +33,6 @@
 - Always execute ``pytest`` after making changes that touch the Python codebase or its behaviours.
 
 ## Known Gaps / Follow-Ups
-- Populate README with usage instructions, volume mounting guidance, and example commands when that knowledge becomes available.
 - Note additional modules, scripts, or configuration files here as they are introduced
 
 ## File Catalog
@@ -51,8 +50,9 @@ paths are relative to the repo root unless stated otherwise.
 ### Documentation & Guidance
 - `AGENTS.md`: Living knowledge base for repository conventions. Update this file whenever you
   discover new behaviours or workflows.
-- `README.md`: User-facing overview that currently focuses on runtime behaviour, container usage,
-  and the environment variables that feed Qobuz credentials into `settings.json` at startup.
+- `README.md`: User-facing overview covering runtime behaviour, step-by-step usage guidance,
+  manual command examples, volume mount configuration, and the environment variables that feed
+  Qobuz credentials into `settings.json` at startup.
 
 ### Container Build & Entrypoint
 - `Dockerfile`: Alpine-based build. Installs OS dependencies, copies repo contents, initialises
