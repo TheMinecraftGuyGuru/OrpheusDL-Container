@@ -26,8 +26,13 @@
 - Scheduler retries Orpheus downloads when Musixmatch captcha errors occur; it waits `MUSIXMATCH_CAPTCHA_RETRY_DELAY` seconds between attempts (defaults to 60) after prompting you to solve the captcha URL before rerunning the same queue entry.
 - Configuration: Modify `settings.json` before building or mount an override at runtime to avoid baking credentials into the image.
 
+## Tests & Verification
+- Unit tests live under the ``tests/`` directory and currently focus on ``list_ui_server``.
+- Run ``pytest`` from the repository root to execute the suite. The tests depend on ``requests`` –
+  install it with ``pip install requests`` if it is not already available in your environment.
+- Always execute ``pytest`` after making changes that touch the Python codebase or its behaviours.
+
 ## Known Gaps / Follow-Ups
-- Document any CI, linting, or smoke-test commands once they exist (currently none are defined in the repo).
 - Populate README with usage instructions, volume mounting guidance, and example commands when that knowledge becomes available.
 - Note additional modules, scripts, or configuration files here as they are introduced
 
