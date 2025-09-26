@@ -9,8 +9,8 @@ A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/
   - `list_ui_server.py` provides a management UI bound to `$LISTS_WEB_PORT` (default `8080`).
   - A foreground scheduler continuously chooses the queue entry with the oldest `last_checked_at` value (treating new entries as "Never"), runs `download qobuz <type> <id>`, and pauses briefly between attempts or when the queue is empty.
   - The web UI surfaces the last checked timestamp for each list entry so you can confirm what the scheduler processed most recently.
-- Any other command supplied to `docker run … <command>` executes through the entrypoint with Python's unbuffered mode forced so output is streamed straight into `docker logs`.
-- Override the entrypoint if you need an interactive shell: `docker run --rm -it --entrypoint bash ghcr.io/theminecraftguyguru/orpheusdl-container`.
+- When you override the service command through Docker Compose (for example `docker compose run orpheusdl download …`), the entrypoint forces Python's unbuffered mode so output is streamed straight into `docker compose logs`.
+- Launch an interactive shell for maintenance tasks with `docker compose run --rm --entrypoint /bin/bash orpheusdl`.
 
 ### Security notice
 
@@ -18,61 +18,48 @@ The bundled web interface ships with **no authentication and no TLS/SSL support*
 
 ## Quick start
 
-```bash
-docker run --rm \
-  -p 8080:8080 \
-  -v "$(pwd)/music:/data/music" \
-  -v "$(pwd)/data:/data" \
-  -e QOBUZ_APP_ID=your_app_id \
-  -e QOBUZ_APP_SECRET=your_app_secret \
-  -e QOBUZ_USER_ID=your_user_id \
-  -e QOBUZ_TOKEN=your_user_token \
-  -e APPLE_MUSIC_USER_TOKEN=your_apple_music_user_token \
-  -e DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... # optional notifications \
-  ghcr.io/theminecraftguyguru/orpheusdl-container:latest
-```
+1. Create dedicated folders on the host to persist the SQLite database and downloaded
+   music (for example `./data` for database/artwork caches and `./music` for downloads).
+2. Copy the provided [`.env.example`](./.env.example) to `.env` and populate it with your
+   Qobuz credentials and any optional variables you plan to use. Keep the `.env` file out
+   of source control to avoid accidentally committing secrets.
+3. Start the service in the background:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   The compose configuration shown below maps the web UI to port 8080 by default and
+   mounts the host directories created in step 1.
 
 ## Usage guide
 
-1. Create folders on the host to persist the SQLite database and downloaded
-   music. The quick start example above assumes `./data` for database and
-   artwork caches and `./music` for the downloaded library.
-2. Supply your Qobuz credentials with the environment variables from the
-   table below. The entrypoint copies them into `/orpheusdl/config/settings.json`
-   before OrpheusDL starts.
+1. Prepare host folders to persist the SQLite database and downloaded music if you have
+   not already done so (`./data` and `./music` in the examples below).
+2. Populate your `.env` file with the environment variables from the table below. The
+   entrypoint copies credentials into `/orpheusdl/config/settings.json` before OrpheusDL
+   starts, so the `.env` file is the only place sensitive values need to live.
 3. Browse to `http://localhost:8080` (or the host/port you mapped) to open the
    list management UI. Use the artist/album/track search panels to enqueue new
    items. The scheduler will download them automatically using the policy
    described in the previous section.
 4. Watch the container logs or configure Discord notifications to monitor
    progress. Manual commands (for example `download qobuz album <id>`) can be
-   executed by supplying the command to `docker run`.
+   executed with `docker compose run --rm orpheusdl download qobuz album <id>`.
 
 ### Manual command examples
 
 Run a one-off download without the background scheduler:
 
 ```bash
-docker run --rm \
-  -v "$(pwd)/music:/data/music" \
-  -v "$(pwd)/data:/data" \
-  -e QOBUZ_APP_ID=... \
-  -e QOBUZ_APP_SECRET=... \
-  -e QOBUZ_USER_ID=... \
-  -e QOBUZ_TOKEN=... \
-  ghcr.io/theminecraftguyguru/orpheusdl-container:latest \
-  download qobuz album 90210
+docker compose run --rm orpheusdl download qobuz album 90210
 ```
 
 Start an interactive shell when you need to inspect files inside the
 container:
 
 ```bash
-docker run --rm -it \
-  -v "$(pwd)/music:/data/music" \
-  -v "$(pwd)/data:/data" \
-  --entrypoint bash \
-  ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+docker compose run --rm --entrypoint /bin/bash orpheusdl
 ```
 
 ## Example Docker Compose service
@@ -82,25 +69,24 @@ services:
   orpheusdl:
     image: ghcr.io/theminecraftguyguru/orpheusdl-container:latest
     container_name: orpheusdl
+    env_file:
+      - ./.env
     environment:
-      # Qobuz credentials (required)
-      - QOBUZ_APP_ID=
-      - QOBUZ_APP_SECRET=
-      - QOBUZ_USER_ID=
-      - QOBUZ_TOKEN=
-      # Optional runtime tuning
-      - LISTS_WEB_PORT=8080          # change to expose the UI on a different port
-      - LISTS_WEB_HOST=0.0.0.0       # bind UI to a specific interface
-      - LISTS_WEB_LOG_LEVEL=INFO     # adjust UI logging verbosity
+      # Optional runtime tuning (keep secrets in the .env file instead)
+      LISTS_WEB_PORT: "8080"
+      LISTS_WEB_HOST: 0.0.0.0
+      LISTS_WEB_LOG_LEVEL: INFO
     ports:
       - "8080:8080"
     volumes:
-      - ./music:/data/music # optional, if not included, music will go into the same folder as data
-      - ./data:/data # stores database of artists, albums, and tracks, and cached album covers and artist photos for webUI
+      - ./music:/data/music:rw
+      - ./data:/data:rw
     restart: unless-stopped
 ```
 
-> **Note:** The compose example above is provided for reference only - edit to fit your environment
+> **Note:** The compose example above mounts host folders and references a `.env` file that is not
+> committed to source control. Adjust the paths, ports, and optional variables to fit your
+> environment before running `docker compose up -d`.
 
 ## Environment variables
 
