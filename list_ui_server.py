@@ -7,6 +7,7 @@ import html
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import queue
 import shutil
@@ -30,6 +31,8 @@ LIST_LABELS: Dict[str, str] = {
     "album": "Albums",
     "track": "Tracks",
 }
+
+FRONTEND_DIR = Path(__file__).with_name("webui")
 
 AUDIO_FILE_EXTENSIONS = {
     ".flac",
@@ -1811,6 +1814,16 @@ def read_entries(kind: str) -> List[Dict[str, str]]:
     return entries
 
 
+def _serialize_lists(*, kind: Optional[str] = None) -> Dict[str, List[Dict[str, str]]]:
+    if kind:
+        normalized = normalize_kind(kind)
+        if not normalized:
+            return {}
+        return {normalized: read_entries(normalized)}
+
+    return {list_kind: read_entries(list_kind) for list_kind in LIST_LABELS}
+
+
 def add_entry(
     kind: str,
     value: str,
@@ -2364,6 +2377,14 @@ class ListRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/static/"):
+            self.handle_static_request(parsed.path)
+            return
+
+        if parsed.path == "/api/lists":
+            self.handle_list_request(parsed)
+            return
+
         if parsed.path == "/api/artist-search":
             self.handle_artist_search(parsed)
             return
@@ -2431,6 +2452,110 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             self.handle_delete(payload, content_type)
         else:
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def _should_return_json(self, content_type: str | None = None) -> bool:
+        if content_type:
+            normalized = content_type.split(";", 1)[0].strip().lower()
+            if normalized == "application/json":
+                return True
+        accept = (self.headers.get("Accept") or "").lower()
+        return "application/json" in accept
+
+    def _send_action_response(
+        self,
+        *,
+        success: bool,
+        message: Optional[str],
+        selected: str,
+        as_json: bool,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not as_json:
+            self.redirect_home(message, is_error=not success, selected=selected)
+            return
+
+        banners: List[Dict[str, Any]] = []
+        if message is not None:
+            banners.append({"message": message, "isError": not success})
+        banners.extend(
+            {"message": text, "isError": is_error}
+            for text, is_error in _consume_async_messages()
+        )
+
+        payload: Dict[str, Any] = {
+            "success": success,
+            "message": message,
+            "selected": selected,
+            "banners": banners,
+            "lists": _serialize_lists(),
+        }
+
+        if extra:
+            payload.update(extra)
+
+        self.send_json(payload)
+
+    def handle_static_request(self, path: str) -> None:
+        relative = path[len("/static/") :]
+        if not relative:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        candidate = Path(relative)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        file_path = (FRONTEND_DIR / candidate).resolve(strict=False)
+        try:
+            frontend_root = FRONTEND_DIR.resolve(strict=False)
+        except FileNotFoundError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        try:
+            file_path.relative_to(frontend_root)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+            return
+
+        try:
+            data = file_path.read_bytes()
+        except OSError:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Failed to read asset.")
+            return
+
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_list_request(self, parsed) -> None:
+        query = parse_qs(parsed.query)
+        requested = query.get("kind", ["all"])[0] or "all"
+        if requested not in {"all", "artist", "album", "track"}:
+            normalized = normalize_kind(requested)
+            if not normalized:
+                self.send_json(
+                    {"error": "Unknown list type."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            requested = normalized
+
+        if requested == "all":
+            payload = _serialize_lists()
+        else:
+            payload = _serialize_lists(kind=requested)
+
+        self.send_json({"lists": payload, "labels": LIST_LABELS})
 
     def handle_photo_request(self, parsed) -> None:
         identifier = parsed.path[len("/photos/"):]
@@ -2690,7 +2815,13 @@ class ListRequestHandler(BaseHTTPRequestHandler):
     def handle_purge_photos(self, raw_body: bytes, content_type: str | None) -> None:
         data, error = self._parse_request_fields(raw_body, content_type)
         if error:
-            self.redirect_home(error, is_error=True)
+            selected = normalize_kind(data.get("selected")) or "artist"
+            self._send_action_response(
+                success=False,
+                message=error,
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
 
         selected = normalize_kind(data.get("selected")) or "artist"
@@ -2700,12 +2831,23 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             message = f"Removed {removed} cached photo{'s' if removed != 1 else ''}."
         else:
             message = "No cached photos found."
-        self.redirect_home(message, is_error=False, selected=selected)
+        self._send_action_response(
+            success=True,
+            message=message,
+            selected=selected,
+            as_json=self._should_return_json(content_type),
+        )
 
     def handle_download_photos(self, raw_body: bytes, content_type: str | None) -> None:
         data, error = self._parse_request_fields(raw_body, content_type)
         if error:
-            self.redirect_home(error, is_error=True)
+            selected = normalize_kind(data.get("selected")) or "artist"
+            self._send_action_response(
+                success=False,
+                message=error,
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
 
         selected = normalize_kind(data.get("selected")) or "artist"
@@ -2717,7 +2859,12 @@ class ListRequestHandler(BaseHTTPRequestHandler):
                 self.address_string(),
                 exc,
             )
-            self.redirect_home(str(exc), is_error=True, selected=selected)
+            self._send_action_response(
+                success=False,
+                message=str(exc),
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
 
         for text, is_error in extra_messages:
@@ -2744,26 +2891,53 @@ class ListRequestHandler(BaseHTTPRequestHandler):
             artist_count,
             album_count,
         )
-        self.redirect_home(message, is_error=False, selected=selected)
+        self._send_action_response(
+            success=True,
+            message=message,
+            selected=selected,
+            as_json=self._should_return_json(content_type),
+        )
 
     def handle_delete(self, raw_body: bytes, content_type: str | None) -> None:
         data, error = self._parse_request_fields(raw_body, content_type)
         if error:
-            self.redirect_home(error, is_error=True)
+            selected = normalize_kind(data.get("selected")) or "artist"
+            self._send_action_response(
+                success=False,
+                message=error,
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
 
         kind = normalize_kind(data.get("list"))
         if not kind:
-            self.redirect_home("Unknown list type.", is_error=True)
+            selected = normalize_kind(data.get("selected")) or "artist"
+            self._send_action_response(
+                success=False,
+                message="Unknown list type.",
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
         selected = normalize_kind(data.get("selected")) or kind
         try:
             index = int(data.get("index", ""))
         except ValueError:
-            self.redirect_home("Invalid entry index.", is_error=True)
+            self._send_action_response(
+                success=False,
+                message="Invalid entry index.",
+                selected=selected,
+                as_json=self._should_return_json(content_type),
+            )
             return
         success, message = remove_entry(kind, index)
-        self.redirect_home(message, is_error=not success, selected=selected)
+        self._send_action_response(
+            success=success,
+            message=message,
+            selected=selected,
+            as_json=self._should_return_json(content_type),
+        )
 
     def redirect_home(
         self,
@@ -2791,265 +2965,43 @@ class ListRequestHandler(BaseHTTPRequestHandler):
         selected_kind: str,
     ) -> str:
         normalized_selected = normalize_kind(selected_kind) or "artist"
-        escaped_selected = html.escape(normalized_selected)
 
-        sections: List[str] = []
-        for kind, label in LIST_LABELS.items():
-            entries = read_entries(kind)
-            row_items: List[str] = []
-            for idx, entry in enumerate(entries):
-                remove_form = ''.join(
-                    [
-                        '<form method="post" action="/delete" class="inline-form">',
-                        f'<input type="hidden" name="list" value="{kind}">',
-                        f'<input type="hidden" name="selected" value="{kind}">',
-                        f'<input type="hidden" name="index" value="{idx}">',
-                        '<button type="submit" class="button danger">Remove</button>',
-                        '</form>',
-                    ]
-                )
+        state: Dict[str, Any] = {
+            "labels": LIST_LABELS,
+            "selectedList": normalized_selected,
+            "lists": _serialize_lists(),
+            "banners": [],
+        }
 
-                primary_text = ""
-                secondary_html = ""
-
-                if isinstance(entry, dict):
-                    entry_id = (entry.get("id") or "").strip()
-                    last_checked_raw = str(entry.get("last_checked_at") or "").strip()
-                    last_checked_label = last_checked_raw or "Never"
-                    separator = " &bull; "
-                    if kind == "artist":
-                        artist_name = (entry.get("name") or "").strip()
-                        primary_text = artist_name or entry_id
-                        secondary_parts: List[str] = []
-                        if entry_id:
-                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
-                        secondary_parts.append(
-                            f"Last checked: {html.escape(last_checked_label)}"
-                        )
-                        if secondary_parts:
-                            secondary_html = (
-                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
-                            )
-                    elif kind == "album":
-                        title = (entry.get("title") or "").strip()
-                        artist_name = (entry.get("artist") or "").strip()
-                        primary_text = title or entry_id
-                        secondary_parts: List[str] = []
-                        if artist_name:
-                            secondary_parts.append(f"Artist: {html.escape(artist_name)}")
-                        if entry_id:
-                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
-                        secondary_parts.append(
-                            f"Last checked: {html.escape(last_checked_label)}"
-                        )
-                        if secondary_parts:
-                            secondary_html = (
-                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
-                            )
-                    elif kind == "track":
-                        title = (entry.get("title") or "").strip()
-                        artist_name = (entry.get("artist") or "").strip()
-                        album_title = (entry.get("album") or "").strip()
-                        primary_text = title or entry_id
-                        secondary_parts: List[str] = []
-                        if artist_name and album_title:
-                            secondary_parts.append(
-                                f"{html.escape(artist_name)} - {html.escape(album_title)}"
-                            )
-                        elif artist_name:
-                            secondary_parts.append(html.escape(artist_name))
-                        elif album_title:
-                            secondary_parts.append(html.escape(album_title))
-                        if entry_id:
-                            secondary_parts.append(f"ID: {html.escape(entry_id)}")
-                        secondary_parts.append(
-                            f"Last checked: {html.escape(last_checked_label)}"
-                        )
-                        if secondary_parts:
-                            secondary_html = (
-                                f'<span class="entry-secondary">{separator.join(secondary_parts)}</span>'
-                            )
-                    else:  # pragma: no cover - unexpected dict entry
-                        primary_text = str(entry)
-                if not primary_text:
-                    primary_text = str(entry)
-
-                entry_primary = html.escape(primary_text)
-                alt_label = primary_text or entry_id or LIST_LABELS[kind][:-1]
-                image_html = ""
-                image_url = ""
-                alt_suffix = ""
-                if kind == "artist" and entry_id:
-                    image_url = _cached_artist_photo_url(entry_id)
-                    alt_suffix = "photo"
-                elif kind == "album" and entry_id:
-                    image_url = _cached_album_photo_url(entry_id)
-                    alt_suffix = "cover"
-
-                if image_url:
-                    alt_text = " ".join(part for part in [alt_label, alt_suffix] if part).strip()
-                    if not alt_text:
-                        alt_text = alt_suffix or LIST_LABELS[kind][:-1]
-                    image_html = ''.join(
-                        [
-                            '<div class="entry-thumb">',
-                            f'<img src="{html.escape(image_url)}" alt="{html.escape(alt_text)}" loading="lazy">',
-                            '</div>',
-                        ]
-                    )
-
-                row_parts = ['<li class="entry">']
-                if image_html:
-                    row_parts.append(image_html)
-                row_parts.extend(
-                    [
-                        '<div class="entry-text">',
-                        f'<span class="entry-primary">{entry_primary}</span>',
-                        secondary_html,
-                        '</div>',
-                        remove_form,
-                        '</li>',
-                    ]
-                )
-                row_items.append(''.join(row_parts))
-
-            rows_html = (
-                '\n'.join(row_items)
-                if row_items
-                else '<li class=\"empty\">No entries yet.</li>'
-            )
-
-            active_class = ' active' if kind == normalized_selected else ''
-            search_block = ''
-            if kind == 'artist':
-                search_block = ARTIST_SEARCH_SECTION
-            elif kind == 'album':
-                search_block = ALBUM_SEARCH_SECTION
-            elif kind == 'track':
-                search_block = TRACK_SEARCH_SECTION
-
-            section_parts = [
-                f'<section class="list-section{active_class}" data-list="{kind}">',
-                '<div class="section-header">',
-                f'<h2>{html.escape(label)}</h2>',
-                '</div>',
-                search_block,
-                f'<ul class="entry-list">{rows_html}</ul>',
-            ]
-
-            section_parts.append('</section>')
-            sections.append(''.join(section_parts))
-
-        banners: List[Tuple[str, bool]] = []
         if message:
-            banners.append((message, is_error))
-        banners.extend(_consume_async_messages())
+            state["banners"].append({"message": message, "isError": is_error})
 
-        message_html = ''.join(
-            f'<div class="banner {"error" if banner_is_error else "info"}">{html.escape(banner_message)}</div>'
-            for banner_message, banner_is_error in banners
+        state["banners"].extend(
+            {"message": text, "isError": banner_is_error}
+            for text, banner_is_error in _consume_async_messages()
         )
 
-        options_html = ''.join(
-            f'<option value="{kind}"{" selected" if kind == normalized_selected else ""}>{html.escape(label)}</option>'
-            for kind, label in LIST_LABELS.items()
-        )
-        controls_html = ''.join(
-            [
-                '<div class="controls">',
-                '<label class="list-switcher" for="list-selector">',
-                '<span class="list-switcher-label">Show list</span>',
-                f'<select id="list-selector" name="list-selector">{options_html}</select>',
-                '</label>',
-                '<form method="post" action="/download-photos" class="inline-form download-form">',
-                f'<input type="hidden" name="selected" value="{escaped_selected}">',
-                '<button type="submit" class="button secondary">Download Images</button>',
-                '</form>',
-                '<form method="post" action="/purge-photos" class="inline-form purge-form">',
-                f'<input type="hidden" name="selected" value="{escaped_selected}">',
-                '<button type="submit" class="button warning">Purge Images</button>',
-                '</form>',
-                '</div>',
-            ]
-        )
-
-        styles = ''.join(
-            [
-                ':root{color-scheme:dark;}',
-                '*{box-sizing:border-box;}',
-                "body{font-family:'Inter',Arial,sans-serif;background:#0b1320;color:#f4f6ff;margin:0;min-height:100vh;}",
-                '.page{max-width:960px;margin:0 auto;padding:1.5rem clamp(1rem,4vw,2.5rem);}',
-                'h1{margin:0 0 1.25rem;font-size:clamp(1.75rem,2.5vw+1rem,2.6rem);}',
-                '.controls{display:flex;flex-wrap:wrap;align-items:center;gap:0.75rem;margin-bottom:1.5rem;}',
-                '.list-switcher{display:flex;align-items:center;gap:0.6rem;background:#161f2f;padding:0.75rem 1rem;border-radius:10px;}',
-                '.list-switcher-label{font-weight:600;font-size:0.95rem;color:#a7b4d6;}',
-                '.list-switcher select{background:#0f1724;border:1px solid #2c3a55;color:#f4f6ff;padding:0.45rem 0.9rem;border-radius:6px;font-size:1rem;min-width:10rem;}',
-                '.banner{margin-bottom:1rem;padding:0.9rem 1rem;border-radius:8px;border:1px solid transparent;}',
-                '.banner.info{background:rgba(47,137,252,0.15);border-color:rgba(47,137,252,0.45);color:#d8e5ff;}',
-                '.banner.error{background:rgba(217,83,79,0.18);border-color:rgba(217,83,79,0.55);color:#ffd7d5;}',
-                '.list-section{display:none;background:#161f2f;border-radius:12px;padding:1.25rem clamp(1rem,3vw,1.75rem);margin-bottom:1.75rem;box-shadow:0 16px 28px rgba(5,10,25,0.45);}',
-                '.list-section.active{display:block;}',
-                '.section-header{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:1rem;}',
-                '.section-header h2{margin:0;font-size:clamp(1.35rem,1.5vw+1rem,1.8rem);}',
-                '.entry-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
-                '.entry{display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.9rem 1rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;}',
-                '.entry-thumb{flex:0 0 auto;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#1b2539;display:flex;align-items:center;justify-content:center;}',
-                '.entry-thumb img{width:100%;height:100%;object-fit:cover;display:block;}',
-                '.entry-text{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
-                '.entry-primary{font-weight:600;word-break:break-word;}',
-                '.entry-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
-                '.inline-form{margin:0;}',
-                '.button{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:6px;padding:0.45rem 0.95rem;font-weight:600;cursor:pointer;transition:transform 0.15s ease,filter 0.15s ease;color:#fff;}',
-                '.button:hover{filter:brightness(1.08);transform:translateY(-1px);}',
-                '.button:active{transform:translateY(0);}',
-                '.button.primary{background:#2f89fc;}',
-                '.button.success{background:#1bbf72;color:#04120a;}',
-                '.button.warning{background:#f0ad4e;color:#2b1a00;}',
-                '.button.danger{background:#d9534f;}',
-                '.button.secondary{background:#3c4fa3;}',
-                '.input-group{display:flex;flex-direction:column;gap:0.35rem;width:100%;flex:1;}',
-                '.field-label{font-size:0.85rem;color:#8d99bd;text-transform:uppercase;letter-spacing:0.05em;}',
-                '.search-form input[type=search],.search-form input[type=text]{background:#0b1320;border:1px solid #2c3a55;border-radius:6px;padding:0.55rem 0.75rem;color:#f4f6ff;font-size:1rem;width:100%;}',
-                '.search-form input[type=search]:focus,.search-form input[type=text]:focus{outline:2px solid #2f89fc;outline-offset:0;border-color:#2f89fc;}',
-                '.search-block{margin:0 0 1.25rem;display:flex;flex-direction:column;gap:0.9rem;}',
-                '.search-form{display:flex;flex-direction:column;gap:0.9rem;}',
-                '.search-grid{display:grid;gap:0.75rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));}',
-                '.search-actions{display:flex;justify-content:flex-end;}',
-                '.search-status{font-size:0.9rem;color:#8d99bd;display:block;}',
-                '.search-results{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0.75rem;}',
-                '.search-result{display:flex;align-items:center;justify-content:space-between;gap:0.9rem;background:#0f1724;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:0.85rem 1rem;}',
-                '.search-meta{flex:1;display:flex;flex-direction:column;gap:0.3rem;}',
-                '.search-primary{font-weight:600;word-break:break-word;}',
-                '.search-secondary{font-size:0.85rem;color:#a7b4d6;word-break:break-word;}',
-                '.search-thumb{flex:0 0 auto;width:72px;height:72px;border-radius:10px;overflow:hidden;background:#1b2539;display:flex;align-items:center;justify-content:center;}',
-                '.search-thumb img{width:100%;height:100%;object-fit:cover;display:block;}',
-                '.search-result .button{align-self:center;}',
-                '.empty{color:#8d99bd;font-style:italic;padding:0.5rem 0;}',
-                '@media (max-width:640px){.entry{flex-direction:column;align-items:stretch;}.entry-thumb{width:100%;height:auto;max-height:220px;}.entry-thumb img{width:100%;height:auto;}.inline-form{width:100%;}.inline-form .button{width:100%;}.search-result{flex-direction:column;align-items:stretch;}.search-thumb{width:100%;height:auto;max-height:220px;}.search-thumb img{width:100%;height:auto;}.search-result .button{width:100%;}.search-actions{justify-content:stretch;}.search-actions .button{width:100%;}}',
-            ]
-        )
-
-        sections_html = ''.join(sections)
+        initial_state = json.dumps(state, separators=(",", ":")).replace("</", "<\\/")
 
         return (
-            '<!DOCTYPE html>'
-            '<html lang="en">'
-            '<head>'
-            '<meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            '<title>OrpheusDL Lists</title>'
-            f'<style>{styles}</style>'
-            '</head>'
-            '<body>'
-            '<div class="page">'
-            '<h1>OrpheusDL Lists</h1>'
-            f'{message_html}'
-            f'{controls_html}'
-            f'{sections_html}'
-            '</div>'
-            f'{SEARCH_SCRIPT}'
-            '</body>'
-            '</html>'
+            "<!DOCTYPE html>"
+            "<html lang=\"en\">"
+            "<head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>OrpheusDL Lists</title>"
+            "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">"
+            "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>"
+            "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap\">"
+            "<link rel=\"stylesheet\" href=\"/static/styles.css\">"
+            "</head>"
+            "<body class=\"app-shell\">"
+            "<noscript><div class=\"noscript\">This application requires JavaScript to run.</div></noscript>"
+            "<div id=\"root\"></div>"
+            f"<script>window.__LIST_UI_STATE__ = {initial_state};</script>"
+            "<script type=\"module\" src=\"/static/main.js\"></script>"
+            "</body>"
+            "</html>"
         )
 
     def send_json(self, payload: Dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
