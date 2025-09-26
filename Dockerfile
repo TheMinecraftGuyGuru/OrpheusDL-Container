@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM alpine:3.20
+FROM ghcr.io/library/alpine:3.20
 
 # Install system dependencies
 RUN apk add --no-cache \

@@ -22,7 +22,7 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
-            python:3.11-slim \
+            ghcr.io/library/python:3.11-slim \
             bash -lc "python -m pip install --upgrade pip ruff && ruff check . --exclude external && python -m compileall list_ui_server.py notifications.py tests"
 
   tests:
@@ -38,7 +38,7 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
-            python:3.11-slim \
+            ghcr.io/library/python:3.11-slim \
             bash -lc "python -m pip install --upgrade pip pytest requests && pytest tests --ignore=external"
 
   docker:
