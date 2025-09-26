@@ -379,16 +379,32 @@ APPLE_USER_TOKEN_ENV_NAMES = (
     'APPLE_USER_TOKEN',
     'APPLE_MUSIC_TOKEN',
 )
-if settings_path.exists():
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+target_exists = target_path.exists()
+target_nonempty = target_exists and target_path.stat().st_size > 0
+source_exists = settings_path.exists()
+
+settings = None
+if target_nonempty:
+    base_path = target_path
+elif source_exists:
+    base_path = settings_path
+else:
+    base_path = None
+
+if base_path is not None:
     try:
-        settings = json.loads(settings_path.read_text())
+        settings = json.loads(base_path.read_text())
     except json.JSONDecodeError:
-        target_path.write_text(settings_path.read_text())
-    else:
-        modules = settings.setdefault('modules', {})
-        qobuz = modules.setdefault('qobuz', {})
-        applemusic = modules.setdefault('applemusic', {})
+        if base_path is settings_path and source_exists:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(settings_path.read_text())
+        settings = None
+
+if settings is not None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    modules = settings.setdefault('modules', {})
+    qobuz = modules.setdefault('qobuz', {})
+    applemusic = modules.setdefault('applemusic', {})
 
 
         for key, env_names in QOBUZ_ENV_MAPPING.items():
@@ -458,7 +474,7 @@ if settings_path.exists():
                 node = node.setdefault(key, {})
             node[path[-1]] = value
 
-        target_path.write_text(json.dumps(settings, indent=4) + '\n')
+    target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
 
 if [ -d /app/modules-default ]; then
