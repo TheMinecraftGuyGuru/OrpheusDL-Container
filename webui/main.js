@@ -5,6 +5,9 @@ import React, {
   useState,
 } from 'https://esm.sh/react@18';
 import { createRoot } from 'https://esm.sh/react-dom@18/client';
+import htm from 'https://esm.sh/htm@3.1.1';
+
+const html = htm.bind(React.createElement);
 
 const LIST_ORDER = ['artist', 'album', 'track'];
 const initialState = window.__LIST_UI_STATE__ || {};
@@ -229,22 +232,26 @@ const BannerStack = ({ banners, onDismiss }) => {
   if (!banners.length) {
     return null;
   }
-  return (
+  return html`
     <div className="banner-stack">
-      {banners.map((banner) => (
-        <div
-          key={banner.id}
-          className={`banner${banner.isError ? ' is-error' : ''}`}
-          role={banner.isError ? 'alert' : 'status'}
-        >
-          <span>{banner.message}</span>
-          <button type="button" onClick={() => onDismiss(banner.id)} aria-label="Dismiss message">
-            ×
-          </button>
-        </div>
-      ))}
+      ${banners.map((banner) => {
+        const bannerClass = `banner${banner.isError ? ' is-error' : ''}`;
+        const role = banner.isError ? 'alert' : 'status';
+        return html`
+          <div key=${banner.id} className=${bannerClass} role=${role}>
+            <span>${banner.message}</span>
+            <button
+              type="button"
+              aria-label="Dismiss message"
+              onClick=${() => onDismiss(banner.id)}
+            >
+              ×
+            </button>
+          </div>
+        `;
+      })}
     </div>
-  );
+  `;
 };
 
 const NeonButton = React.forwardRef(function NeonButton(
@@ -252,75 +259,78 @@ const NeonButton = React.forwardRef(function NeonButton(
   ref,
 ) {
   const variantClass = variant === 'danger' ? ' is-danger' : variant === 'ghost' ? ' is-ghost' : '';
-  return (
-    <button ref={ref} className={`reactbits-button${variantClass} ${className}`.trim()} {...props}>
-      {children}
+  const buttonClass = `reactbits-button${variantClass} ${className}`.trim();
+  return html`
+    <button ref=${ref} className=${buttonClass} ...${props}>
+      ${children}
     </button>
-  );
+  `;
 });
 
-const GlassCard = ({ className = '', padded = true, children }) => (
-  <section className={`reactbits-card ${padded ? 'reactbits-card--padded' : 'reactbits-card--flush'} ${className}`.trim()}>
-    {children}
-  </section>
-);
+const GlassCard = ({ className = '', padded = true, children }) => {
+  const cardClass = `reactbits-card ${padded ? 'reactbits-card--padded' : 'reactbits-card--flush'} ${className}`.trim();
+  return html`<section className=${cardClass}>${children}</section>`;
+};
 
-const Tabs = ({ value, onChange, options }) => (
-  <div className="reactbits-tabs" role="tablist" aria-label="List selector">
-    {options.map((option) => (
-      <button
-        key={option.value}
-        type="button"
-        role="tab"
-        aria-selected={value === option.value}
-        className={`reactbits-tab${value === option.value ? ' is-active' : ''}`}
-        onClick={() => onChange(option.value)}
-      >
-        {option.label}
-      </button>
-    ))}
-  </div>
-);
+const Tabs = ({ value, onChange, options }) =>
+  html`
+    <div className="reactbits-tabs" role="tablist" aria-label="List selector">
+      ${options.map((option) => {
+        const isActive = value === option.value;
+        const tabClass = `reactbits-tab${isActive ? ' is-active' : ''}`;
+        return html`
+          <button
+            key=${option.value}
+            type="button"
+            role="tab"
+            aria-selected=${isActive}
+            className=${tabClass}
+            onClick=${() => onChange(option.value)}
+          >
+            ${option.label}
+          </button>
+        `;
+      })}
+    </div>
+  `;
 
 const EntryList = ({ kind, label, entries, onRemove, disabled, isRefreshing }) => {
   const countLabel = `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`;
 
   if (!entries.length) {
-    return (
-      <GlassCard>
+    return html`
+      <${GlassCard}>
         <div className="list-header">
-          <h2>{label}</h2>
-          <span className="count-pill">{countLabel}</span>
+          <h2>${label}</h2>
+          <span className="count-pill">${countLabel}</span>
         </div>
-        {isRefreshing ? (
-          <div className="loader" aria-label="Loading entries" />
-        ) : (
-          <div className="empty-state">No entries yet.</div>
-        )}
-      </GlassCard>
-    );
+        ${isRefreshing
+          ? html`<div className="loader" aria-label="Loading entries" />`
+          : html`<div className="empty-state">No entries yet.</div>`}
+      </${GlassCard}>
+    `;
   }
 
-  return (
-    <GlassCard>
+  return html`
+    <${GlassCard}>
       <div className="list-header">
-        <h2>{label}</h2>
-        <span className="count-pill">{countLabel}</span>
+        <h2>${label}</h2>
+        <span className="count-pill">${countLabel}</span>
       </div>
       <div className="entry-collection">
-        {entries.map((entry, index) => (
-          <EntryCard
-            key={`${kind}-${entry.id || index}`}
-            kind={kind}
-            entry={entry}
-            index={index}
-            onRemove={onRemove}
-            disabled={disabled}
-          />
-        ))}
+        ${entries.map((entry, index) =>
+          html`<${EntryCard}
+            key=${`${kind}-${entry.id || index}`}
+            kind=${kind}
+            entry=${entry}
+            index=${index}
+            onRemove=${onRemove}
+            disabled=${disabled}
+          />`
+        )}
       </div>
-    </GlassCard>
-  );
+    </${GlassCard}>
+  `;
 };
 
 const formatLastChecked = (value) => {
@@ -362,28 +372,34 @@ const EntryCard = ({ kind, entry, index, onRemove, disabled }) => {
       ? buildAlbumPhotoUrl(albumId)
       : '';
 
-  return (
-    <div className={`entry-card${imageUrl ? '' : ' no-media'}`}>
-      {imageUrl ? (
-        <div className="entry-thumb">
-          <img src={imageUrl} alt="Artwork" loading="lazy" onError={(event) => (event.currentTarget.style.display = 'none')} />
-        </div>
-      ) : null}
+  const cardClass = `entry-card${imageUrl ? '' : ' no-media'}`;
+  return html`
+    <div className=${cardClass}>
+      ${imageUrl
+        ? html`<div className="entry-thumb">
+            <img
+              src=${imageUrl}
+              alt="Artwork"
+              loading="lazy"
+              onError=${(event) => (event.currentTarget.style.display = 'none')}
+            />
+          </div>`
+        : null}
       <div className="entry-content">
-        <div className="entry-title">{primary}</div>
-        {subtitle ? <div className="entry-subtitle">{subtitle}</div> : null}
-        <div className="entry-meta">{meta}</div>
+        <div className="entry-title">${primary}</div>
+        ${subtitle ? html`<div className="entry-subtitle">${subtitle}</div>` : null}
+        <div className="entry-meta">${meta}</div>
       </div>
-      <NeonButton
+      <${NeonButton}
         type="button"
         variant="danger"
-        onClick={() => onRemove(kind, index)}
-        disabled={disabled}
+        onClick=${() => onRemove(kind, index)}
+        disabled=${disabled}
       >
         Remove
-      </NeonButton>
+      </${NeonButton}>
     </div>
-  );
+  `;
 };
 
 const SearchPanel = ({
@@ -404,61 +420,61 @@ const SearchPanel = ({
     onSubmit(type);
   };
 
-  return (
-    <GlassCard>
+  return html`
+    <${GlassCard}>
       <div className="list-header">
         <div>
-          <h2>{config.heading}</h2>
-          <div className="entry-meta">{config.tagline}</div>
+          <h2>${config.heading}</h2>
+          <div className="entry-meta">${config.tagline}</div>
         </div>
       </div>
-      <form className="search-form" onSubmit={submit}>
+      <form className="search-form" onSubmit=${submit}>
         <div className="field-grid">
-          {config.fields.map((field) => (
-            <div className="field-group" key={field.key}>
-              <label htmlFor={`${type}-${field.key}`}>{field.label}</label>
+          ${config.fields.map((field) =>
+            html`<div className="field-group" key=${field.key}>
+              <label htmlFor=${`${type}-${field.key}`}>${field.label}</label>
               <input
-                id={`${type}-${field.key}`}
-                type={field.type || 'text'}
+                id=${`${type}-${field.key}`}
+                type=${field.type || 'text'}
                 autoComplete="off"
-                placeholder={field.placeholder}
-                value={state.inputs[field.key] ?? ''}
-                required={field.required}
-                onChange={(event) => handleChange(field.key, event.target.value)}
+                placeholder=${field.placeholder}
+                value=${state.inputs[field.key] ?? ''}
+                required=${field.required}
+                onChange=${(event) => handleChange(field.key, event.target.value)}
               />
-            </div>
-          ))}
+            </div>`
+          )}
         </div>
         <div className="search-actions">
-          <NeonButton type="submit" disabled={disabled || state.status === 'loading'}>
-            {state.status === 'loading' ? 'Searching…' : 'Search'}
-          </NeonButton>
+          <${NeonButton} type="submit" disabled=${disabled || state.status === 'loading'}>
+            ${state.status === 'loading' ? 'Searching…' : 'Search'}
+          </${NeonButton}>
         </div>
-        <div className="search-status">{state.message}</div>
-        {state.status === 'loading' ? (
-          <div className="loader" aria-label="Searching" />
-        ) : state.results.length ? (
-          <ul className="search-results">
-            {state.results.map((item, index) => (
-              <li key={`${type}-result-${item.id ?? index}`} className="search-result-card">
-                <div className="search-result-meta">
-                  <div className="search-primary">{config.renderPrimary(item)}</div>
-                  <div className="search-secondary">{config.renderSecondary(item)}</div>
-                </div>
-                <NeonButton
-                  type="button"
-                  onClick={() => onSelect(type, item)}
-                  disabled={disabled}
-                >
-                  Add
-                </NeonButton>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+        <div className="search-status">${state.message}</div>
+        ${state.status === 'loading'
+          ? html`<div className="loader" aria-label="Searching" />`
+          : state.results.length
+          ? html`<ul className="search-results">
+              ${state.results.map((item, index) =>
+                html`<li key=${`${type}-result-${item.id ?? index}`} className="search-result-card">
+                  <div className="search-result-meta">
+                    <div className="search-primary">${config.renderPrimary(item)}</div>
+                    <div className="search-secondary">${config.renderSecondary(item)}</div>
+                  </div>
+                  <${NeonButton}
+                    type="button"
+                    onClick=${() => onSelect(type, item)}
+                    disabled=${disabled}
+                  >
+                    Add
+                  </${NeonButton}>
+                </li>`
+              )}
+            </ul>`
+          : null}
       </form>
-    </GlassCard>
-  );
+    </${GlassCard}>
+  `;
 };
 
 function App() {
@@ -736,7 +752,7 @@ function App() {
     label: labels[kind] || kind.charAt(0).toUpperCase() + kind.slice(1),
   }));
 
-  return (
+  return html`
     <div className="layout">
       <header className="header-intro">
         <span className="eyebrow">Queue control</span>
@@ -746,58 +762,58 @@ function App() {
         </p>
       </header>
 
-      <BannerStack banners={banners} onDismiss={handleDismissBanner} />
+      <${BannerStack} banners=${banners} onDismiss=${handleDismissBanner} />
 
-      <GlassCard>
+      <${GlassCard}>
         <div className="list-header">
           <h2>Choose a list to manage</h2>
-          <Tabs value={selectedList} onChange={setSelectedList} options={listOptions} />
+          <${Tabs} value=${selectedList} onChange=${setSelectedList} options=${listOptions} />
         </div>
         <div className="list-actions">
-          <NeonButton
+          <${NeonButton}
             type="button"
-            onClick={() => handlePhotosAction('/download-photos')}
-            disabled={pending}
+            onClick=${() => handlePhotosAction('/download-photos')}
+            disabled=${pending}
           >
             Download missing artwork
-          </NeonButton>
-          <NeonButton
+          </${NeonButton}>
+          <${NeonButton}
             type="button"
             variant="danger"
-            onClick={() => handlePhotosAction('/purge-photos')}
-            disabled={pending}
+            onClick=${() => handlePhotosAction('/purge-photos')}
+            disabled=${pending}
           >
             Purge cached artwork
-          </NeonButton>
+          </${NeonButton}>
         </div>
-      </GlassCard>
+      </${GlassCard}>
 
-      {selectedConfig ? (
-        <SearchPanel
-          type={selectedList}
-          config={selectedConfig}
-          state={selectedSearchState}
-          onInputChange={handleInputChange}
-          onSubmit={runSearch}
-          onSelect={handleSelectResult}
-          disabled={pending}
-        />
-      ) : null}
+      ${selectedConfig
+        ? html`<${SearchPanel}
+            type=${selectedList}
+            config=${selectedConfig}
+            state=${selectedSearchState}
+            onInputChange=${handleInputChange}
+            onSubmit=${runSearch}
+            onSelect=${handleSelectResult}
+            disabled=${pending}
+          />`
+        : null}
 
-      <EntryList
-        kind={selectedList}
-        label={labels[selectedList] || selectedList}
-        entries={lists[selectedList]}
-        onRemove={handleRemoveEntry}
-        disabled={pending}
-        isRefreshing={refreshing}
+      <${EntryList}
+        kind=${selectedList}
+        label=${labels[selectedList] || selectedList}
+        entries=${lists[selectedList]}
+        onRemove=${handleRemoveEntry}
+        disabled=${pending}
+        isRefreshing=${refreshing}
       />
     </div>
-  );
+  `;
 }
 
 const container = document.getElementById('root');
 if (container) {
   const root = createRoot(container);
-  root.render(<App />);
+  root.render(html`<${App} />`);
 }
