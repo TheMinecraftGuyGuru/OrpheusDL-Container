@@ -375,6 +375,13 @@ if settings_path.exists():
         target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
 
+if [ -d /app/modules-default ]; then
+    mkdir -p /orpheusdl/modules
+    if ! find /orpheusdl/modules -mindepth 1 -maxdepth 1 -print -quit >/dev/null 2>&1; then
+        cp -a /app/modules-default/. /orpheusdl/modules/
+    fi
+fi
+
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
