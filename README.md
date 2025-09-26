@@ -78,7 +78,7 @@ services:
     volumes:
       - ./music:/data/music:rw
       - ./data:/data:rw
-      - ./config/settings.json:/app/settings.json:rw
+      - ./config:/orpheusdl/config:rw
       - ./modules:/orpheusdl/modules:rw
     restart: unless-stopped
 ```
