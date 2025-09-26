@@ -45,7 +45,7 @@ jobs:
           python -m pip install pytest requests
 
       - name: Run pytest
-        run: .venv/bin/pytest
+        run: .venv/bin/pytest tests --ignore=external
 
   docker:
     name: Docker build
