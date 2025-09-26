@@ -17,17 +17,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python environment
+      - name: Run lint and bytecode checks in Docker
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip ruff
-
-      - name: Run ruff
-        run: .venv/bin/ruff check . --exclude external
-
-      - name: Verify Python bytecode compiles
-        run: .venv/bin/python -m compileall list_ui_server.py notifications.py tests
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ghcr.io/library/python:3.11-slim \
+            bash -lc "python -m pip install --upgrade pip ruff && ruff check . --exclude external && python -m compileall list_ui_server.py notifications.py tests"
 
   tests:
     name: Tests
@@ -37,15 +33,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Run pytest inside Docker
         run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install pytest requests
-
-      - name: Run pytest
-        run: .venv/bin/pytest tests --ignore=external
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            ghcr.io/library/python:3.11-slim \
+            bash -lc "python -m pip install --upgrade pip pytest requests && pytest tests --ignore=external"
 
   docker:
     name: Docker build
