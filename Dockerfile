@@ -45,7 +45,9 @@ RUN mkdir -p /orpheusdl/modules/qobuz /orpheusdl/modules/musixmatch /orpheusdl/m
     && cp -a /app/external/orpheusdl/. /orpheusdl/ \
     && cp -a /app/external/orpheusdl-qobuz/. /orpheusdl/modules/qobuz/ \
     && cp -a /app/external/orpheusdl-musixmatch/. /orpheusdl/modules/musixmatch/ \
-    && cp -a /app/external/orpheusdl-applemusic-basic/. /orpheusdl/modules/applemusic/
+    && cp -a /app/external/orpheusdl-applemusic-basic/. /orpheusdl/modules/applemusic/ \
+    && mkdir -p /app/modules-default \
+    && cp -a /orpheusdl/modules/. /app/modules-default/
 
 # Change to the OrpheusDL directory at runtime so bundled modules are detected
 WORKDIR /orpheusdl

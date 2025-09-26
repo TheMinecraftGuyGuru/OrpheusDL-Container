@@ -1,0 +1,12 @@
+services:
+  orpheusdl:
+    image: ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+    container_name: orpheusdl
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./music:/data/music:rw
+      - ./data:/data:rw
+      - ./config/settings.json:/app/settings.json:rw
+      - ./modules:/orpheusdl/modules:rw
+    restart: unless-stopped

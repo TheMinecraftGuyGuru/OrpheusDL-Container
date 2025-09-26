@@ -1,7 +1,7 @@
 AI Agents see AGENTS.md
 # OrpheusDL-Container
 
-A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) with the Qobuz provider. The entrypoint keeps the nightly list scheduler running, exposes a lightweight web UI for managing artist/album/track lists, and syncs Qobuz credentials from environment variables into the bundled `settings.json` file at startup.
+A pre-built container image for running [OrpheusDL](https://github.com/OrfiTeam/OrpheusDL) with the Qobuz provider. The entrypoint keeps the nightly list scheduler running, exposes a lightweight web UI for managing artist/album/track lists, and stages the bundled `settings.json` file into OrpheusDL's config directory so you can mount and customise it directly.
 
 ## Default runtime behaviour
 
@@ -18,27 +18,31 @@ The bundled web interface ships with **no authentication and no TLS/SSL support*
 
 ## Quick start
 
-1. Create dedicated folders on the host to persist the SQLite database and downloaded
-   music (for example `./data` for database/artwork caches and `./music` for downloads).
-2. Copy the provided [`.env.example`](./.env.example) to `.env` and populate it with your
-   Qobuz credentials and any optional variables you plan to use. Keep the `.env` file out
-   of source control to avoid accidentally committing secrets.
+1. Create dedicated folders on the host to persist the SQLite database, downloaded music,
+   configuration, and modules (for example `./data`, `./music`, `./config`, and `./modules`).
+   ```bash
+   mkdir -p ./data ./music ./config ./modules
+   ```
+2. Copy the bundled [`settings.json`](./settings.json) to `./config/settings.json` and edit it
+   with your Qobuz credentials plus any other OrpheusDL preferences.
 3. Start the service in the background:
 
    ```bash
    docker compose up -d
    ```
 
-   The compose configuration shown below maps the web UI to port 8080 by default and
-   mounts the host directories created in step 1.
+   The compose configuration shown below maps the web UI to port 8080 by default and mounts
+   the host directories created in step 1. On the first boot the container will populate the
+   mounted `./modules` directory with the bundled providers so you can add or modify modules as
+   needed.
 
 ## Usage guide
 
 1. Prepare host folders to persist the SQLite database and downloaded music if you have
    not already done so (`./data` and `./music` in the examples below).
-2. Populate your `.env` file with the environment variables from the table below. The
-   entrypoint copies credentials into `/orpheusdl/config/settings.json` before OrpheusDL
-   starts, so the `.env` file is the only place sensitive values need to live.
+2. Edit your mounted `./config/settings.json` to include the required Qobuz credentials under
+   `modules.qobuz` and any other preferences you want OrpheusDL to use. Restart the container
+   after making changes so the updated file is copied into `/orpheusdl/config/settings.json`.
 3. Browse to `http://localhost:8080` (or the host/port you mapped) to open the
    list management UI. Use the artist/album/track search panels to enqueue new
    items. The scheduler will download them automatically using the policy
@@ -69,26 +73,24 @@ services:
   orpheusdl:
     image: ghcr.io/theminecraftguyguru/orpheusdl-container:latest
     container_name: orpheusdl
-    env_file:
-      - ./.env
-    environment:
-      # Optional runtime tuning (keep secrets in the .env file instead)
-      LISTS_WEB_PORT: "8080"
-      LISTS_WEB_HOST: 0.0.0.0
-      LISTS_WEB_LOG_LEVEL: INFO
     ports:
       - "8080:8080"
     volumes:
       - ./music:/data/music:rw
       - ./data:/data:rw
+      - ./config/settings.json:/app/settings.json:rw
+      - ./modules:/orpheusdl/modules:rw
     restart: unless-stopped
 ```
 
-> **Note:** The compose example above mounts host folders and references a `.env` file that is not
-> committed to source control. Adjust the paths, ports, and optional variables to fit your
-> environment before running `docker compose up -d`.
+> **Note:** The compose example above mounts host folders for data, configuration, and modules.
+> Adjust the paths and ports to fit your environment before running `docker compose up -d`.
 
 ## Environment variables
+
+Editing `settings.json` is the primary way to configure the container, but the entrypoint still
+honours the following environment variables when you prefer to manage overrides through your
+orchestration tooling.
 
 ### Core container variables
 

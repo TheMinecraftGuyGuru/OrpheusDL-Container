@@ -1,6 +1,6 @@
 # Extended environment variables
 
-This document lists the advanced and optional environment variables supported by the OrpheusDL container image. Use it alongside the [README](./README.md), which covers the required credentials and primary runtime options.
+This document lists the advanced and optional environment variables supported by the OrpheusDL container image. Use it alongside the [README](./README.md), which explains how to mount and edit `settings.json` plus highlights the most common runtime options.
 
 ## OrpheusDL settings overrides
 
