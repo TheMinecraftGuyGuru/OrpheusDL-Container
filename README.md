@@ -149,9 +149,11 @@ Every leaf value in [`settings.json`](./settings.json) can be overridden via an 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_LYRICS` | `applemusic` | Default lyrics provider. |
-| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_COVERS` | `applemusic` | Default cover art provider. |
-| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_CREDITS` | `applemusic` | Default credits provider. |
+| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_LYRICS` | `default` | Default lyrics provider. |
+| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_COVERS` | `default` | Default cover art provider. |
+| `ORPHEUSDL_GLOBAL_MODULE_DEFAULTS_CREDITS` | `default` | Default credits provider. |
+
+Set any of these variables to `applemusic` if you intend to supply Apple Music credentials and want the bundled module to handle lyrics, artwork, or credits lookups.
 
 #### `global.lyrics`
 
