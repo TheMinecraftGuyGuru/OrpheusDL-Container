@@ -1,6 +1,92 @@
 #!/bin/bash
 set -euo pipefail
 
+SETTINGS_SOURCE="/app/settings.json"
+SETTINGS_TARGET="/orpheusdl/config/settings.json"
+export SETTINGS_SOURCE SETTINGS_TARGET
+
+web_pid=""
+main_child_pid=""
+
+sync_settings_to_source() {
+    local source="$SETTINGS_SOURCE"
+    local target="$SETTINGS_TARGET"
+
+    if [ ! -f "$target" ]; then
+        return 0
+    fi
+
+    local source_dir
+    source_dir="$(dirname -- "$source")"
+    if ! mkdir -p "$source_dir"; then
+        echo "[entrypoint] warning: unable to create settings directory: $source_dir" >&2
+        return 0
+    fi
+
+    local tmp_file
+    if ! tmp_file="$(mktemp "$source".XXXXXX)"; then
+        echo "[entrypoint] warning: unable to create temporary file for settings sync" >&2
+        return 0
+    fi
+
+    if ! cp "$target" "$tmp_file" 2>/dev/null; then
+        echo "[entrypoint] warning: failed to copy $target to temporary file" >&2
+        rm -f "$tmp_file"
+        return 0
+    fi
+
+    if ! mv "$tmp_file" "$source" 2>/dev/null; then
+        echo "[entrypoint] warning: failed to update $source from $target" >&2
+        rm -f "$tmp_file"
+    fi
+}
+
+cleanup() {
+    local exit_code=$?
+
+    if [ -n "${web_pid:-}" ]; then
+        kill "$web_pid" 2>/dev/null || true
+        wait "$web_pid" 2>/dev/null || true
+    fi
+
+    if [ -n "${main_child_pid:-}" ]; then
+        kill "$main_child_pid" 2>/dev/null || true
+        wait "$main_child_pid" 2>/dev/null || true
+    fi
+
+    sync_settings_to_source || true
+
+    return "$exit_code"
+}
+
+forward_signal() {
+    local signal="$1"
+    local exit_code=0
+
+    case "$signal" in
+        TERM)
+            exit_code=143
+            ;;
+        INT)
+            exit_code=130
+            ;;
+    esac
+
+    if [ -n "${main_child_pid:-}" ]; then
+        kill -"$signal" "$main_child_pid" 2>/dev/null || true
+    fi
+
+    if [ -n "${web_pid:-}" ]; then
+        kill "$web_pid" 2>/dev/null || true
+    fi
+
+    exit "$exit_code"
+}
+
+trap cleanup EXIT
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+
 notify_discord() {
     if [ -z "${DISCORD_WEBHOOK_URL:-${DISCORD_WEBHOOK:-}}" ]; then
         return 0
@@ -272,8 +358,8 @@ import json
 import os
 from pathlib import Path
 
-settings_path = Path('/app/settings.json')
-target_path = Path('/orpheusdl/config/settings.json')
+settings_path = Path(os.environ['SETTINGS_SOURCE'])
+target_path = Path(os.environ['SETTINGS_TARGET'])
 QOBUZ_ENV_MAPPING = {
     'app_id': ('QOBUZ_APP_ID', 'APP_ID', 'app_id'),
     'app_secret': ('QOBUZ_APP_SECRET', 'APP_SECRET', 'app_secret'),
@@ -398,7 +484,6 @@ fi
 if [ "${#cmd[@]}" -eq 0 ]; then
     python3 -u /app/list_ui_server.py &
     web_pid=$!
-    trap 'kill "$web_pid" 2>/dev/null || true' EXIT INT TERM
     notify_discord "info" "scheduler_started" "Continuous scheduler started"
     run_continuous_scheduler
     exit 0
@@ -435,4 +520,12 @@ esac
 
 set -- "${cmd[@]}"
 
-exec "$@"
+set +e
+"$@" &
+main_child_pid=$!
+wait "$main_child_pid"
+exit_code=$?
+main_child_pid=""
+set -e
+
+exit "$exit_code"
