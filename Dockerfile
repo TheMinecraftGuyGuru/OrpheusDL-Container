@@ -8,12 +8,18 @@ RUN apk add --no-cache \
         ffmpeg \
         gcc \
         git \
+        jpeg-dev \
+        lcms2-dev \
         libffi-dev \
+        libwebp-dev \
         musl-dev \
+        openjpeg-dev \
         openssl-dev \
         python3 \
         python3-dev \
-        py3-pip
+        py3-pip \
+        tiff-dev \
+        zlib-dev
 
 # Set working dir
 WORKDIR /app
