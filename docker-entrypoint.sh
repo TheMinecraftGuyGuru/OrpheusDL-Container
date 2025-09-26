@@ -328,6 +328,50 @@ if settings_path.exists():
                     applemusic['user_token'] = value
                 break
 
+        def iter_setting_paths(mapping, parents=None):
+            parents = list(parents or [])
+            for key, value in mapping.items():
+                current_path = parents + [key]
+                if isinstance(value, dict):
+                    yield from iter_setting_paths(value, current_path)
+                else:
+                    yield current_path, value
+
+        def env_var_name(path):
+            return 'ORPHEUSDL_' + '_'.join(part.upper().replace('-', '_') for part in path)
+
+        def coerce_value(raw, template):
+            if isinstance(template, bool):
+                normalized = raw.strip().lower()
+                if normalized in {'1', 'true', 'yes', 'on'}:
+                    return True
+                if normalized in {'0', 'false', 'no', 'off'}:
+                    return False
+                return template
+            if isinstance(template, int) and not isinstance(template, bool):
+                try:
+                    return int(raw.strip())
+                except (TypeError, ValueError):
+                    return template
+            if isinstance(template, float):
+                try:
+                    return float(raw.strip())
+                except (TypeError, ValueError):
+                    return template
+            return raw
+
+        overrides = []
+        for path, value in iter_setting_paths(settings):
+            env_name = env_var_name(path)
+            if env_name in os.environ:
+                overrides.append((path, coerce_value(os.environ[env_name], value)))
+
+        for path, value in overrides:
+            node = settings
+            for key in path[:-1]:
+                node = node.setdefault(key, {})
+            node[path[-1]] = value
+
         target_path.write_text(json.dumps(settings, indent=4) + '\n')
 PY
 
