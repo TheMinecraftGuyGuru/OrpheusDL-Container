@@ -71,7 +71,7 @@ docker compose run --rm --entrypoint /bin/bash orpheusdl
 ```yaml
 services:
   orpheusdl:
-    image: ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+    image: ghcr.io/theminecraftguyguru/orpheusdl-container:settings-json-format
     container_name: orpheusdl
     ports:
       - "8080:8080"
@@ -85,6 +85,9 @@ services:
 
 > **Note:** The compose example above mounts host folders for data, configuration, and modules.
 > Adjust the paths and ports to fit your environment before running `docker compose up -d`.
+>
+> Use the `settings-json-format` image tag shown here when you want the container build from this branch.
+> The `latest` tag continues to track the `main` branch builds.
 
 ## Environment variables
 
@@ -132,5 +135,5 @@ Mount the following directories to keep your library and queue between container
    docker build -t orpheusdl .
    ```
 
-Once built, the locally tagged image behaves the same as the published `ghcr.io/theminecraftguyguru/orpheusdl-container:latest` image.
+Once built, the locally tagged image behaves the same as the published `ghcr.io/theminecraftguyguru/orpheusdl-container:settings-json-format` image for this branch.
 
