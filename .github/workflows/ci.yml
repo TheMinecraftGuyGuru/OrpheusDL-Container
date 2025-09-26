@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip ruff
 
       - name: Run ruff
-        run: .venv/bin/ruff check .
+        run: .venv/bin/ruff check . --exclude external
 
       - name: Verify Python bytecode compiles
         run: .venv/bin/python -m compileall list_ui_server.py notifications.py tests
@@ -45,7 +45,7 @@ jobs:
           python -m pip install pytest requests
 
       - name: Run pytest
-        run: .venv/bin/pytest
+        run: .venv/bin/pytest tests --ignore=external
 
   docker:
     name: Docker build
