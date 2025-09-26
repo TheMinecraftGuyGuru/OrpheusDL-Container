@@ -17,14 +17,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install lint dependencies
-        run: python3 -m pip install --upgrade pip ruff
+      - name: Set up Python environment
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip ruff
 
       - name: Run ruff
-        run: ruff check .
+        run: .venv/bin/ruff check .
 
       - name: Verify Python bytecode compiles
-        run: python3 -m compileall list_ui_server.py notifications.py tests
+        run: .venv/bin/python -m compileall list_ui_server.py notifications.py tests
 
   tests:
     name: Tests
@@ -36,11 +39,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pytest requests
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install pytest requests
 
       - name: Run pytest
-        run: pytest
+        run: .venv/bin/pytest
 
   docker:
     name: Docker build
