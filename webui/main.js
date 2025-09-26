@@ -757,9 +757,6 @@ function App() {
       <header className="header-intro">
         <span className="eyebrow">Queue control</span>
         <h1>OrpheusDL Lists</h1>
-        <p>
-          Manage the artists, albums, and tracks that OrpheusDL will synchronise. Search Qobuz, curate your queue, and keep artwork up to date—all from a modern React interface powered by ReactBits-inspired components.
-        </p>
       </header>
 
       <${BannerStack} banners=${banners} onDismiss=${handleDismissBanner} />
