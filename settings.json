@@ -22,9 +22,9 @@
             "spatial_codecs": true
         },
         "module_defaults": {
-            "lyrics": "applemusic",
-            "covers": "applemusic",
-            "credits": "applemusic"
+            "lyrics": "default",
+            "covers": "default",
+            "credits": "default"
         },
         "lyrics": {
             "embed_lyrics": true,
