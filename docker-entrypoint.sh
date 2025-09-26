@@ -463,7 +463,7 @@ PY
 
 if [ -d /app/modules-default ]; then
     mkdir -p /orpheusdl/modules
-    if ! find /orpheusdl/modules -mindepth 1 -maxdepth 1 -print -quit >/dev/null 2>&1; then
+    if [ -z "$(find /orpheusdl/modules -mindepth 1 -maxdepth 1 -print -quit)" ]; then
         cp -a /app/modules-default/. /orpheusdl/modules/
     fi
 fi
