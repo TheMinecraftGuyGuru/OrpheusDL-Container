@@ -1,6 +1,6 @@
 services:
   orpheusdl:
-    image: ghcr.io/theminecraftguyguru/orpheusdl-container:latest
+    image: ghcr.io/theminecraftguyguru/orpheusdl-container:settings-json-format
     container_name: orpheusdl
     ports:
       - "8080:8080"

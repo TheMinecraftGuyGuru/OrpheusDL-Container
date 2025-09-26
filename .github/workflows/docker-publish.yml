@@ -2,7 +2,7 @@ name: Publish Docker image
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "settings.json-format" ]
   workflow_dispatch:
 
 jobs:
@@ -29,12 +29,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute image tags
+        id: metadata
+        run: |
+          tags="ghcr.io/theminecraftguyguru/orpheusdl-container:${GITHUB_SHA}"
+          ref_name="${GITHUB_REF##*/}"
+
+          if [ "${ref_name}" = "main" ]; then
+            tags=$'ghcr.io/theminecraftguyguru/orpheusdl-container:latest\n'"${tags}"
+          elif [ "${ref_name}" = "settings.json-format" ]; then
+            tags=$'ghcr.io/theminecraftguyguru/orpheusdl-container:settings-json-format\n'"${tags}"
+          fi
+
+          {
+            echo 'tags<<EOF'
+            echo "${tags}"
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          tags: |
-            ghcr.io/theminecraftguyguru/orpheusdl-container:latest
-            ghcr.io/theminecraftguyguru/orpheusdl-container:${{ github.sha }}
+          tags: ${{ steps.metadata.outputs.tags }}
